@@ -571,7 +571,8 @@ with tab5:
             
             draw.ellipse((px - r, py - r, px + r, py + r), fill="#ff9f43", outline="#ffffff", width=3)
             
-            temp_label = " 📍新規ピン配置中... "
+            # 絵文字を削除し、文字化けを防止
+            temp_label = " 新規ピン配置中... "
             if hasattr(font, "getbbox"):
                 bbox = font.getbbox(temp_label)
                 text_w = bbox[2] - bbox[0]
