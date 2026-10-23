@@ -7,7 +7,8 @@ import os
 import requests
 import urllib.request
 from PIL import Image, ImageDraw, ImageFont
-from streamlit_drawable_canvas import st_canvas
+# ★スマホ対応の画像クリック取得ライブラリに変更
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 # ---------------------------------------------------------
 # ページ設定 & 自動翻訳無効化ヘッダー
@@ -483,12 +484,11 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (【最終形態】赤丸完全制御 ＆ 文字化けゼロ版)
+# ⑤ ポイントマップ (【最終形態】スマホタップ＆レスポンシブ完全対応版)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
     
-    # 状態管理（仮ピンの座標とキャンバスのリセットキー）
     temp_pin_key = f"temp_pin_{plan_id}"
     map_cnt_key = f"map_key_cnt_{plan_id}"
     
@@ -530,18 +530,16 @@ with tab5:
     
     if current_map_path and os.path.exists(current_map_path):
         st.subheader("📍 画像上をタップ/クリックしてピンを設置")
-        st.caption("💡 **ヒント:** タップするとオレンジ色の「仮ピン」が1つだけ置かれます。別の場所をタップすると移動します。")
+        st.caption("💡 **ヒント:** スマホでも画面にピッタリ収まります。画像をタップするとオレンジ色の「仮ピン」が置かれます。")
         
         font = get_jp_font(15)
         base_img = Image.open(current_map_path).convert("RGB")
         w, h = base_img.size
-        target_width = 750
-        canvas_height = int(h * (target_width / float(w))) if w > 0 else 500
 
         draw_img = base_img.copy()
         draw = ImageDraw.Draw(draw_img)
         
-        # 保存済みのピンをすべて描画（赤色）
+        # 保存済みのピンを描画
         if show_all_pins:
             for p in pins_list:
                 if p.get("visible", True):
@@ -562,16 +560,15 @@ with tab5:
                     draw.rectangle([px + r + 4, py - r - 2, px + r + 4 + text_w + 4, py - r + text_h + 4], fill="#222222")
                     draw.text((px + r + 8, py - r), label_text, fill="#ffffff", font=font)
 
-        # ★ 今回のキモ: Python側で「仮ピン（オレンジ色）」を１つだけ描画する
+        # 仮ピンの描画
         if st.session_state[temp_pin_key]:
             tx, ty = st.session_state[temp_pin_key]
             px = int((tx / 100.0) * w)
             py = int((ty / 100.0) * h)
-            r = max(10, int(w * 0.02)) # 少し大きめのオレンジピン
+            r = max(10, int(w * 0.02))
             
             draw.ellipse((px - r, py - r, px + r, py + r), fill="#ff9f43", outline="#ffffff", width=3)
             
-            # 絵文字を削除し、文字化けを防止
             temp_label = " 新規ピン配置中... "
             if hasattr(font, "getbbox"):
                 bbox = font.getbbox(temp_label)
@@ -587,35 +584,27 @@ with tab5:
         rendered_temp_path = os.path.join("uploads", f"temp_single_map_{plan_id}.jpg")
         draw_img.save(rendered_temp_path, "JPEG", quality=85)
 
-        # ★ キャンバスの設定: 描画サイズを0にして「フロントエンドの赤丸」を消滅させる
+        # ★ スマホ対応の画像クリック取得モジュールを使用
         canvas_key = f"perfect_map_canvas_{plan_id}_{st.session_state[map_cnt_key]}"
-        canvas_result = st_canvas(
-            fill_color="rgba(0, 0, 0, 0)",
-            stroke_width=0,
-            background_image=Image.open(rendered_temp_path),
-            update_streamlit=True,
-            height=canvas_height,
-            width=target_width,
-            drawing_mode="point",
-            point_display_radius=0, # ★ これによりキャンバス内部の丸は一切画面に残りません
+        
+        value = streamlit_image_coordinates(
+            rendered_temp_path,
             key=canvas_key,
+            use_column_width=True, # ★ スマホの画面幅に合わせて自動リサイズ（はみ出さない）
         )
 
-        # タップを検知したら即座に座標を保存して画面をリフレッシュ
-        if canvas_result is not None and canvas_result.json_data is not None:
-            objects = canvas_result.json_data.get("objects", [])
-            if len(objects) > 0:
-                last_obj = objects[-1]
-                click_x = last_obj.get("left", 0)
-                click_y = last_obj.get("top", 0)
-                
-                calc_x = round((click_x / float(target_width)) * 100, 1)
-                calc_y = round((click_y / float(canvas_height)) * 100, 1)
-                
-                # 仮ピンの座標を上書き保存し、キャンバスの記憶を強制リセット
-                st.session_state[temp_pin_key] = (calc_x, calc_y)
-                st.session_state[map_cnt_key] += 1
-                st.rerun()
+        # タップを検知したら座標を保存して画面をリフレッシュ
+        if value is not None:
+            click_x = value.get("x", 0)
+            click_y = value.get("y", 0)
+            
+            # 取得したピクセル座標をパーセントに変換
+            calc_x = round((click_x / float(w)) * 100, 1)
+            calc_y = round((click_y / float(h)) * 100, 1)
+            
+            st.session_state[temp_pin_key] = (calc_x, calc_y)
+            st.session_state[map_cnt_key] += 1
+            st.rerun()
 
         # 仮ピンが存在する場合のみフォームを表示
         if st.session_state[temp_pin_key]:
@@ -634,12 +623,10 @@ with tab5:
                         "title": p_name, "memo": p_memo, "icon": p_icon.split()[0],
                         "x": float(calc_x), "y": float(calc_y), "visible": True, "created_at": datetime.now()
                     })
-                    # 保存完了したら仮ピンを消去してリフレッシュ
                     st.session_state[temp_pin_key] = None
                     st.success(f"「{p_name}」をマップに登録しました！")
                     st.rerun()
             
-            # キャンセルボタン（フォームの外に配置）
             if st.button("❌ 選択をキャンセルしてピンを消す", key="cancel_temp_pin"):
                 st.session_state[temp_pin_key] = None
                 st.session_state[map_cnt_key] += 1
