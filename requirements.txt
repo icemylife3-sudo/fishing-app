@@ -3,3 +3,4 @@ pandas
 firebase-admin
 requests
 Pillow
+streamlit-drawable-canvas
