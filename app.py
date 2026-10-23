@@ -5,7 +5,7 @@ from firebase_admin import credentials, firestore
 from datetime import date, datetime, timedelta
 import os
 import requests
-from PIL import Image, ImageDraw
+from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 
 # ---------------------------------------------------------
@@ -500,20 +500,18 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (安全保存・名前直接文字描画＆編集機能対応)
+# ⑤ ポイントマップ (文字化け解消・タップ入力フォーム一体型)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
     
-    col_map1, col_map2 = st.columns([1.2, 1])
-    
     map_doc = plan_doc_ref.collection("map_config").document("current").get()
     current_map_path = map_doc.to_dict().get("image_path") if map_doc.exists else ""
 
-    with col_map1:
-        st.subheader("1. 釣場画像・図面の管理")
+    st.subheader("1. 釣場画像・図面の管理")
+    col_u1, col_u2 = st.columns([2, 1])
+    with col_u1:
         map_img_file = st.file_uploader("航空写真やマップ画像を選択 (JPEG/PNG)", type=["jpg", "jpeg", "png"], key="map_img_file_picker")
-        
         if map_img_file is not None:
             if st.button("💾 マップ画像を確定・保存", key="btn_confirm_map_img", type="primary"):
                 saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
@@ -521,7 +519,7 @@ with tab5:
                 plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
                 st.success("マップ画像を保存しました！")
                 st.rerun()
-            
+    with col_u2:
         if current_map_path and os.path.exists(current_map_path):
             if st.button("🗑️ 現在のマップ画像を削除", key="btn_del_map_img"):
                 try:
@@ -531,13 +529,6 @@ with tab5:
                 plan_doc_ref.collection("map_config").document("current").delete()
                 st.success("マップ画像を削除しました。")
                 st.rerun()
-
-    with col_map2:
-        st.subheader("2. ピンの情報入力")
-        pin_title = st.text_input("ポイント名", placeholder="例: 1番船着き場 / 手前の根", key="pin_title_in")
-        pin_memo = st.text_input("状況・メモ", placeholder="例: 手前5m根掛かり注意 / 水深6m", key="pin_memo_in")
-        pin_icon = st.selectbox("アイコン", ["📍 ポイント", "🎯 ヒット実績", "⚠️ 危険・注意", "⚓ 渡船・集合"], key="pin_icon_in")
-        st.caption("👈 下の画像上を直接タップ/クリックするとその場所にピンが打刻されます！")
 
     st.divider()
 
@@ -552,36 +543,14 @@ with tab5:
         try:
             base_img = Image.open(current_map_path).convert("RGB")
             w, h = base_img.size
-            
-            draw_img = base_img.copy()
-            draw = ImageDraw.Draw(draw_img)
-            
-            if show_all_pins:
-                for p in pins_list:
-                    if p.get("visible", True):
-                        px = int((p.get("x", 50) / 100.0) * w)
-                        py = int((p.get("y", 50) / 100.0) * h)
-                        r = max(10, int(w * 0.02))
-                        
-                        # 赤丸描画
-                        draw.ellipse((px - r, py - r, px + r, py + r), fill="#e74c3c", outline="#ffffff", width=3)
-                        
-                        # テキスト（ポイント名）描画
-                        label_text = f" {p.get('title', 'ポイント')} "
-                        draw.rectangle([px + r + 2, py - r - 2, px + r + (len(label_text) * 12), py + r + 2], fill="black")
-                        draw.text((px + r + 4, py - r), label_text, fill="#ffffff")
-
-            # 一時画像としてディスクへ書き出してキャンバスに渡す（エラー回避のため必須）
-            rendered_temp_path = os.path.join("uploads", f"temp_rendered_{plan_id}.jpg")
-            draw_img.save(rendered_temp_path, "JPEG", quality=80)
-
             canvas_height = int(h * (700 / float(w))) if w > 0 else 500
 
+            # キャンバスでタップを受け付け
             canvas_result = st_canvas(
                 fill_color="rgba(255, 165, 0, 0.3)",
                 stroke_width=2,
                 stroke_color="#e74c3c",
-                background_image=Image.open(rendered_temp_path),
+                background_image=base_img,
                 update_streamlit=True,
                 height=canvas_height,
                 width=700,
@@ -590,7 +559,7 @@ with tab5:
                 key="interactive_map_canvas",
             )
 
-            # タップ時の座標追加ロジック
+            # タップされた場合にその場所の入力フォームを動的にポップアップ表示
             if canvas_result is not None and canvas_result.json_data is not None:
                 objects = canvas_result.json_data.get("objects", [])
                 if len(objects) > 0:
@@ -601,19 +570,27 @@ with tab5:
                     calc_x = round((click_x / 700.0) * 100, 1) if 700.0 > 0 else 50.0
                     calc_y = round((click_y / float(canvas_height)) * 100, 1) if canvas_height > 0 else 50.0
                     
-                    target_title = pin_title if pin_title else f"ポイント({calc_x}%, {calc_y}%)"
+                    st.info(f"📍 タップ位置 (横: {calc_x}% / 縦: {calc_y}%) にピンを追加します。")
                     
-                    plan_doc_ref.collection("pins").add({
-                        "title": target_title,
-                        "memo": pin_memo,
-                        "icon": pin_icon.split()[0],
-                        "x": float(calc_x),
-                        "y": float(calc_y),
-                        "visible": True,
-                        "created_at": datetime.now()
-                    })
-                    st.success(f"「{target_title}」の位置にピンを設置しました！")
-                    st.rerun()
+                    with st.form("new_pin_form_popup"):
+                        col_p1, col_p2 = st.columns(2)
+                        p_name = col_p1.text_input("ポイント名", placeholder="例: 1番船着き場", key="pop_p_name")
+                        p_icon = col_p2.selectbox("アイコン", ["📍 ポイント", "🎯 ヒット実績", "⚠️ 危険・注意", "⚓ 渡船・集合"], key="pop_p_icon")
+                        p_memo = st.text_area("詳細メモ（水深・ヒットルアー・注意点など）", placeholder="例: 水深6m、手前5mに根あり。下げ潮で実績あり。", key="pop_p_memo")
+                        
+                        btn_sub = st.form_submit_button("📌 このピンを確定して保存", type="primary")
+                        if btn_sub and p_name:
+                            plan_doc_ref.collection("pins").add({
+                                "title": p_name,
+                                "memo": p_memo,
+                                "icon": p_icon.split()[0],
+                                "x": float(calc_x),
+                                "y": float(calc_y),
+                                "visible": True,
+                                "created_at": datetime.now()
+                            })
+                            st.success(f"「{p_name}」をマップに登録しました！")
+                            st.rerun()
 
         except Exception as e:
             st.error(f"マップ描画中にエラーが発生しました: {e}")
@@ -621,31 +598,34 @@ with tab5:
     else:
         st.info("上のエリアからマップ・航空写真画像を選択し、「💾 マップ画像を確定・保存」を押すとマップが表示されます。")
 
-    # ピンの管理・編集・削除一覧
+    # ピンの管理・編集・メモ閲覧・削除一覧
     if pins_list:
-        st.subheader("📋 ポイント一覧・編集・削除")
+        st.subheader("📋 ポイント一覧・編集・詳細メモ")
         for pin in pins_list:
             p_id = pin["id"]
             
-            with st.expander(f"{pin.get('icon', '📍')} **{pin.get('title', '')}** (X:{pin.get('x')}% / Y:{pin.get('y')}%)"):
-                cols = st.columns([0.1, 0.3, 0.3, 0.15, 0.15])
+            with st.expander(f"{pin.get('icon', '📍')} **{pin.get('title', '')}** (位置: 横{pin.get('x')}% / 縦{pin.get('y')}%)"):
+                col_e1, col_e2, col_e3 = st.columns([0.1, 0.45, 0.45])
                 
                 cur_vis = pin.get("visible", True)
-                new_vis = cols[0].checkbox("表示", value=cur_vis, key=f"pin_vis_{p_id}")
+                new_vis = col_e1.checkbox("表示", value=cur_vis, key=f"pin_vis_{p_id}")
                 if new_vis != cur_vis:
                     plan_doc_ref.collection("pins").document(p_id).update({"visible": new_vis})
                     st.rerun()
                     
-                cols[1].write(f"**メモ:** {pin.get('memo', '-')}")
+                edit_name = col_e2.text_input("ポイント名編集", value=pin.get("title", ""), key=f"edit_name_{p_id}")
+                edit_memo = col_e3.text_area("メモ編集", value=pin.get("memo", ""), key=f"edit_memo_{p_id}")
                 
-                edit_name = cols[2].text_input("名前編集", value=pin.get("title", ""), key=f"edit_name_{p_id}")
-                
-                if cols[3].button("💾 保存", key=f"save_pin_{p_id}"):
-                    plan_doc_ref.collection("pins").document(p_id).update({"title": edit_name})
-                    st.success("名前を更新しました！")
+                btn_cols = st.columns([1, 1, 8])
+                if btn_cols[0].button("💾 保存", key=f"save_pin_{p_id}"):
+                    plan_doc_ref.collection("pins").document(p_id).update({
+                        "title": edit_name,
+                        "memo": edit_memo
+                    })
+                    st.success("ピン情報を更新しました！")
                     st.rerun()
                     
-                if cols[4].button("🗑️ 削除", key=f"del_pin_{p_id}"):
+                if btn_cols[1].button("🗑️ 削除", key=f"del_pin_{p_id}"):
                     plan_doc_ref.collection("pins").document(p_id).delete()
                     st.rerun()
 
@@ -802,7 +782,7 @@ with tab7:
         st.write("* 支出を登録すると、1人あたりの精算額が自動計算されます。")
 
     with st.expander("🗺️ 4. ポイントマップの使い方", expanded=False):
-        st.write("* 画像を選択して「確定・保存」で登録。画像をタップしてピンを配置し、名前の編集や削除を行えます。")
+        st.write("* 画像を「確定・保存」で登録し、画像上の狙った場所をタップしてピン・メモを追加・編集できます。")
 
-    with st.expander("🌤️ 5. ピンポイント天気・風予報の使い方", expanded=False):
+    with st.expander("🌤️ 5. ピンポイント天気・风予報の使い方", expanded=False):
         st.write("* 3時間おきの大きな天気アイコンと気温・風速が確認できます。")
