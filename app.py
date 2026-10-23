@@ -5,8 +5,22 @@ from firebase_admin import credentials, firestore
 from datetime import date, datetime, timedelta
 import os
 import requests
+import streamlit.components.v1 as components
+import base64
 
+# ---------------------------------------------------------
+# ページ設定 & 自動翻訳無効化ヘッダー
+# ---------------------------------------------------------
 st.set_page_config(page_title="共有釣行管理アプリ", page_icon="🎣", layout="wide")
+
+st.markdown("""
+    <html lang="ja">
+    <head>
+        <meta name="google" content="notranslate">
+        <meta http-equiv="Content-Language" content="ja">
+    </head>
+    </html>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # Firebase 初期化
@@ -26,10 +40,10 @@ def init_firebase():
                     cred = credentials.Certificate(cred_dict)
                     firebase_admin.initialize_app(cred)
                 else:
-                    st.error("⚠️ `serviceAccountKey.json` が見つかりませんでした。")
+                    st.error("⚠️ Streamlit Secrets に [firebase] の設定が見つかりません。")
                     st.stop()
-            except Exception:
-                st.error("⚠️ Firebaseの鍵ファイル (`serviceAccountKey.json`) が見つかりません。`app.py` と同じフォルダに配置されているか確認してください。")
+            except Exception as e:
+                st.error(f"⚠️ Firebaseの初期化に失敗しました。Secretsの設定を確認してください。\nエラー: {e}")
                 st.stop()
             
     return firestore.client()
@@ -67,9 +81,11 @@ def delete_plan(plan_id):
     db.collection("plans").document(plan_id).delete()
 
 # ---------------------------------------------------------
-# 地名検索（国内スポット高精度対応）
+# 地名検索（国内高精度対応）
 # ---------------------------------------------------------
 def geocode_location_jp(location_name):
+    if not location_name:
+        return None, None, None
     try:
         url = f"https://nominatim.openstreetmap.org/search?format=json&q={location_name}&countrycodes=jp&limit=1"
         headers = {"User-Agent": "FishingApp/1.0"}
@@ -155,7 +171,7 @@ current_plan = plans_df[plans_df["name"] == selected_plan_name].iloc[0]
 plan_id = current_plan["id"]
 members = current_plan.get("members", [])
 
-# 日付データの取得と検証（開始日・終了日）
+# 日付データの取得と検証
 raw_start = current_plan.get("start_date")
 raw_end = current_plan.get("end_date")
 
@@ -212,12 +228,14 @@ st.divider()
 # ---------------------------------------------------------
 # タブ構成
 # ---------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🗓️ 行程表", 
     "💰 旅費割り勘管理", 
     "✅ 個人別持ち物チェック", 
     "🐟 釣果記録（写真付）",
-    "🌤️ 天気・風予報"
+    "🗺️ ポイントマップ",
+    "🌤️ 天気・風予報",
+    "📖 簡易説明書 & 📄 しおり"
 ])
 
 plan_doc_ref = db.collection("plans").document(plan_id)
@@ -452,20 +470,141 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ 天気・風予報
+# ⑤ ポイントマップ
 # =========================================================
 with tab5:
+    st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
+    
+    col_map1, col_map2 = st.columns([1.2, 1])
+    
+    with col_map1:
+        st.subheader("1. 釣場画像・図面の登録")
+        map_img_file = st.file_uploader("航空写真やマップ画像をアップロード", type=["jpg", "jpeg", "png"], key="map_img_upload")
+        
+        map_doc = plan_doc_ref.collection("map_config").document("current").get()
+        current_map_path = map_doc.to_dict().get("image_path") if map_doc.exists else ""
+        
+        if map_img_file is not None:
+            os.makedirs("uploads", exist_ok=True)
+            saved_map_path = os.path.join("uploads", f"map_{plan_id}_{map_img_file.name}")
+            with open(saved_map_path, "wb") as f:
+                f.write(map_img_file.getbuffer())
+            plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
+            st.success("マップ画像を登録しました！")
+            st.rerun()
+            
+    with col_map2:
+        st.subheader("2. ピン（ポイントメモ）の打刻")
+        pin_title = st.text_input("ポイント名", placeholder="例: 1番船着き場 / 手前の根", key="pin_title_in")
+        pin_memo = st.text_input("状況・メモ", placeholder="例: 手前5m根掛かり注意 / 水深6m", key="pin_memo_in")
+        pin_icon = st.selectbox("アイコンタイプ", ["📍 ポイント", "🎯 ヒット実績", "⚠️ 危険・注意", "⚓ 渡船・集合"], key="pin_icon_in")
+        
+        col_pos1, col_pos2 = st.columns(2)
+        pos_x = col_pos1.slider("位置 (横方向 %)", 0, 100, 50, key="pin_x_in")
+        pos_y = col_pos2.slider("位置 (縦方向 %)", 0, 100, 50, key="pin_y_in")
+        
+        if st.button("ピンを設置", key="btn_add_pin") and pin_title:
+            plan_doc_ref.collection("pins").add({
+                "title": pin_title,
+                "memo": pin_memo,
+                "icon": pin_icon.split()[0],
+                "x": pos_x,
+                "y": pos_y,
+                "visible": True,
+                "created_at": datetime.now()
+            })
+            st.success(f"「{pin_title}」にピンを打刻しました！")
+            st.rerun()
+
+    st.divider()
+
+    pins_docs = plan_doc_ref.collection("pins").stream()
+    pins_list = [{"id": d.id, **d.to_dict()} for d in pins_docs]
+    
+    col_ctrl1, col_ctrl2 = st.columns([1, 2])
+    show_all_pins = col_ctrl1.toggle("全ピンを一括表示/非表示", value=True, key="toggle_all_pins")
+    
+    if current_map_path and os.path.exists(current_map_path):
+        st.subheader("📍 ポイントマップ プレビュー")
+        
+        with open(current_map_path, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode()
+        
+        pins_html = ""
+        if show_all_pins:
+            for p in pins_list:
+                if p.get("visible", True):
+                    pins_html += f"""
+                    <div style="position: absolute; left: {p.get('x', 50)}%; top: {p.get('y', 50)}%; transform: translate(-50%, -50%); cursor: pointer;" title="{p.get('title')} ({p.get('memo')})">
+                        <span style="font-size: 24px;">{p.get('icon', '📍')}</span>
+                        <span style="background: rgba(0,0,0,0.75); color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; white-space: nowrap;">{p.get('title')}</span>
+                    </div>
+                    """
+        
+        map_container_html = f"""
+        <div style="position: relative; width: 100%; max-width: 900px; margin: 0 auto; border: 2px solid #ddd; border-radius: 8px; overflow: hidden;">
+            <img src="data:image/png;base64,{encoded_string}" style="width: 100%; display: block;" />
+            {pins_html}
+        </div>
+        """
+        components.html(map_container_html, height=500, scrolling=True)
+    else:
+        st.info("上のエリアからマップ・航空写真画像をアップロードすると、ここにピン付きマップが表示されます。")
+
+    if pins_list:
+        st.subheader("📋 ポイント一覧・表示切替・削除")
+        for pin in pins_list:
+            p_id = pin["id"]
+            cols = st.columns([0.1, 0.3, 0.4, 0.1, 0.1])
+            
+            cur_vis = pin.get("visible", True)
+            new_vis = cols[0].checkbox("", value=cur_vis, key=f"pin_vis_{p_id}")
+            if new_vis != cur_vis:
+                plan_doc_ref.collection("pins").document(p_id).update({"visible": new_vis})
+                st.rerun()
+                
+            cols[1].write(f"{pin.get('icon', '📍')} **{pin.get('title', '')}**")
+            cols[2].caption(pin.get("memo", "-"))
+            cols[3].caption(f"X:{pin.get('x')}% / Y:{pin.get('y')}%")
+            
+            if cols[4].button("🗑️", key=f"del_pin_{p_id}"):
+                plan_doc_ref.collection("pins").document(p_id).delete()
+                st.rerun()
+
+# =========================================================
+# ⑥ 天気・風予報（行程表と自動連動・保持版）
+# =========================================================
+with tab6:
     st.header("🌤️ 釣場ポイントのピンポイント天気・風予報")
     
+    # 行程表から最新の場所・日付を自動取得して初期保持
+    itin_docs = plan_doc_ref.collection("itinerary").order_by("date_time").stream()
+    itin_list = [d.to_dict() for d in itin_docs]
+    
+    default_loc = ""
+    default_date = s_date_obj
+    
+    if itin_list:
+        default_loc = itin_list[0].get("location", "")
+        try:
+            default_date = datetime.strptime(itin_list[0].get("date_time", "").split()[0], "%Y-%m-%d").date()
+        except:
+            pass
+
     if "num_forecast_days" not in st.session_state:
         st.session_state.num_forecast_days = 1
 
     col_s1, col_s2, col_s3, col_btn1, col_btn2 = st.columns([2.5, 1.5, 1, 0.5, 0.5])
-    search_query = col_s1.text_input("釣場・スポット名を入力", placeholder="例: 奥多摩湖、柴山沼、野尻湖、神津島、勝浦など", key="weather_search_input")
-    target_date = col_s2.date_input("開始日を選択", value=date.today(), key="target_date_select")
     
-    if "target_coords" not in st.session_state:
-        st.session_state.target_coords = None
+    search_query = col_s1.text_input("釣場・スポット名を入力", value=default_loc, placeholder="例: 奥多摩湖、神津島など", key="weather_search_input")
+    target_date = col_s2.date_input("開始日を選択", value=default_date, key="target_date_select")
+    
+    # 初回表示時に自動で座標を固定保持
+    if "target_coords" not in st.session_state or st.session_state.target_coords is None:
+        if default_loc:
+            lat, lon, found_name = geocode_location_jp(default_loc)
+            if lat and lon:
+                st.session_state.target_coords = {"lat": lat, "lon": lon, "name": found_name}
 
     if col_s3.button("検索＆確定", key="btn_confirm_loc"):
         if search_query:
@@ -486,7 +625,7 @@ with tab5:
 
     st.divider()
 
-    if st.session_state.target_coords:
+    if st.session_state.get("target_coords"):
         coords = st.session_state.target_coords
         n_days = st.session_state.num_forecast_days
         
@@ -499,4 +638,99 @@ with tab5:
         else:
             st.warning("指定された日付の予報データがありません。（※今日から14日以内を選択してください）")
     else:
-        st.info("👆 上の検索欄にスポット名を入力し、開始日を選んで「検索＆確定」を押してください。")
+        st.info("👆 行程表に登録された場所の予報が自動セットされます。別の場所を見る場合は検索欄に入力して「検索＆確定」を押してください。")
+
+# =========================================================
+# ⑦ 簡易説明書 & 📄 遠征のしおり発行
+# =========================================================
+with tab7:
+    st.header("📖 簡易説明書 & 📄 遠征のしおり発行")
+    
+    st.subheader("📄 遠征のしおり（レポート）の発行")
+    st.caption("釣行完了後、以下のボタンを押すと全体の思い出や割り勘精算結果をまとめた「しおりカード」が生成されます。")
+    
+    if st.button("📄 しおり（レポート）を生成・表示", key="btn_generate_report", type="primary"):
+        exp_docs = plan_doc_ref.collection("expenses").stream()
+        exp_list = [d.to_dict() for d in exp_docs]
+        total_exp = sum([int(e.get("amount", 0)) for e in exp_list])
+        per_person = int(total_exp / len(members)) if members else 0
+        
+        catches_docs = plan_doc_ref.collection("catches").stream()
+        catches_list = [d.to_dict() for d in catches_docs]
+        
+        max_size = 0.0
+        big_fish = "-"
+        if catches_list:
+            sorted_catches = sorted(catches_list, key=lambda x: float(x.get("size", 0)), reverse=True)
+            max_size = sorted_catches[0].get("size", 0)
+            big_fish = f"{sorted_catches[0].get('species', '-')} ({max_size}cm)"
+            
+        report_html = f"""
+        <div style="background: #f8f9fa; border: 2px solid #2b5c8f; border-radius: 12px; padding: 24px; font-family: sans-serif; max-width: 800px; margin: 0 auto;">
+            <div style="text-align: center; border-bottom: 2px solid #2b5c8f; padding-bottom: 12px; margin-bottom: 20px;">
+                <h1 style="color: #2b5c8f; margin: 0;">🎣 {selected_plan_name} 遠征しおり</h1>
+                <p style="color: #666; margin: 5px 0 0 0;">🗓️ {s_date} 〜 {e_date} | 👥 {', '.join(members)}</p>
+            </div>
+            
+            <div style="display: flex; gap: 15px; margin-bottom: 20px;">
+                <div style="flex: 1; background: #eef5fc; padding: 15px; border-radius: 8px; text-align: center;">
+                    <span style="font-size: 12px; color: #555;">💰 総費用 (1人あたり)</span>
+                    <h3 style="margin: 5px 0; color: #2b5c8f;">¥{total_exp:,} (¥{per_person:,})</h3>
+                </div>
+                <div style="flex: 1; background: #fff3cd; padding: 15px; border-radius: 8px; text-align: center;">
+                    <span style="font-size: 12px; color: #555;">🏆 ビッグワン記録</span>
+                    <h3 style="margin: 5px 0; color: #856404;">{big_fish}</h3>
+                </div>
+            </div>
+            
+            <h3 style="color: #2b5c8f; border-left: 4px solid #2b5c8f; padding-left: 8px;">🐟 釣果ハイライト ({len(catches_list)}件)</h3>
+            <ul style="line-height: 1.8; color: #333;">
+        """
+        for c in catches_list[:5]:
+            report_html += f"<li><b>{c.get('catch_date')}</b> - {c.get('species')} {c.get('size')}cm ({c.get('location')}) - {c.get('lure')}</li>"
+            
+        report_html += """
+            </ul>
+            <div style="text-align: right; margin-top: 20px; font-size: 12px; color: #888;">
+                Generated by 共有釣行管理アプリ
+            </div>
+        </div>
+        """
+        
+        components.html(report_html, height=450, scrolling=True)
+        st.info("💡 上の「しおりカード」をスマホでスクリーンショット撮影すると、LINE等で簡単に共有できます！")
+
+    st.divider()
+
+    st.subheader("📖 アプリの簡易ガイド")
+    
+    with st.expander("📁 1. 釣行計画の追加・切り替え", expanded=False):
+        st.write("""
+        * **切り替え**: 左側サイドバーの「現在の計画」からいつでも過去・未来の遠征を選択できます。
+        * **日程更新**: サイドバーの「開始日・終了日」を変更するとリアルタイムで全体に反映されます。
+        * **新規追加**: サイドバーの「➕ 新しい計画を追加」から仲間との遠征を追加できます。
+        """)
+
+    with st.expander("🗓️ 2. 行程表の使い方", expanded=False):
+        st.write("""
+        * 集合時間、フェリー乗船、出港時間、宿泊先の予定を登録できます。
+        * 各予定の右側にある **ゴミ箱アイコン（🗑️）** で不要になった予定を即座に削除できます。
+        """)
+
+    with st.expander("💰 3. 旅費割り勘計算の使い方", expanded=False):
+        st.write("""
+        * 船代、高速代、ガソリン代、エサ代を「誰が払ったか」と一緒に登録するだけ！
+        * 1人あたりの平均負担額と、個人ごとの「立替・精算金額」が自動計算されます。
+        """)
+
+    with st.expander("🗺️ 4. ポイントマップの使い方", expanded=False):
+        st.write("""
+        * 航空写真や釣り場マップ画像をアップロードし、X%・Y%のスライダーでピンを打刻できます。
+        * 「全ピン一括表示/非表示」トグルスイッチや、個別のチェックボックスでマップの見やすさを自由に調整可能です。
+        """)
+
+    with st.expander("🌤️ 5. ピンポイント天気・風予報の使い方", expanded=False):
+        st.write("""
+        * 行程表に登録した場所と日付が自動的にセットされて表示・固定保存されます。
+        * 「＋1日」「ー1日」ボタンで表示日数を調整し、釣り場の風速・風向き・天気をピンポイントで確認できます。
+        """)
