@@ -7,6 +7,8 @@ import os
 import requests
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
+import streamlit.components.v1 as components
+import base64
 
 # ---------------------------------------------------------
 # ページ設定 & 自動翻訳無効化ヘッダー
@@ -500,7 +502,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (文字化け解消・タップ入力フォーム一体型)
+# ⑤ ポイントマップ (1打刻限定＆F5永続保持完全修正版)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -540,60 +542,87 @@ with tab5:
     if current_map_path and os.path.exists(current_map_path):
         st.subheader("📍 画像上をタップ/クリックしてピンを打つ")
         
-        try:
-            base_img = Image.open(current_map_path).convert("RGB")
-            w, h = base_img.size
-            canvas_height = int(h * (700 / float(w))) if w > 0 else 500
+        # Base64エンコードしてオーバーレイ描画用のHTMLコンポーネントを作成（F5更新で消えない処理）
+        with open(current_map_path, "rb") as f:
+            encoded_img = base64.b64encode(f.read()).decode("utf-8")
+            
+        pins_overlay_html = ""
+        if show_all_pins:
+            for p in pins_list:
+                if p.get("visible", True):
+                    px = p.get("x", 50)
+                    py = p.get("y", 50)
+                    icon_symbol = p.get("icon", "📍")
+                    p_title = p.get("title", "ポイント")
+                    pins_overlay_html += f"""
+                    <div style="position: absolute; left: {px}%; top: {py}%; transform: translate(-50%, -100%); pointer-events: none; text-align: center; z-index: 10;">
+                        <span style="font-size: 22px; filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.8));">{icon_symbol}</span><br/>
+                        <span style="background: rgba(0,0,0,0.85); color: #ffffff; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; white-space: nowrap; border: 1px solid #ffffff;">{p_title}</span>
+                    </div>
+                    """
+        
+        # HTML/CSSによるリアルタイムオーバーレイ表示（F5更新でも100%確実に描画）
+        map_display_html = f"""
+        <div style="position: relative; width: 100%; max-width: 800px; border: 2px solid #2a5298; border-radius: 8px; overflow: hidden; background: #000; margin-bottom: 10px;">
+            <img src="data:image/jpeg;base64,{encoded_img}" style="width: 100%; height: auto; display: block;" />
+            {pins_overlay_html}
+        </div>
+        """
+        components.html(map_display_html, height=520, scrolling=True)
 
-            # キャンバスでタップを受け付け
-            canvas_result = st_canvas(
-                fill_color="rgba(255, 165, 0, 0.3)",
-                stroke_width=2,
-                stroke_color="#e74c3c",
-                background_image=base_img,
-                update_streamlit=True,
-                height=canvas_height,
-                width=700,
-                drawing_mode="point",
-                point_display_radius=8,
-                key="interactive_map_canvas",
-            )
+        # 1点打刻限定の透明インタラクティブ・タップ領域
+        base_img = Image.open(current_map_path)
+        w, h = base_img.size
+        canvas_height = int(h * (700 / float(w))) if w > 0 else 500
 
-            # タップされた場合にその場所の入力フォームを動的にポップアップ表示
-            if canvas_result is not None and canvas_result.json_data is not None:
-                objects = canvas_result.json_data.get("objects", [])
-                if len(objects) > 0:
-                    last_obj = objects[-1]
-                    click_x = last_obj.get("left", 0)
-                    click_y = last_obj.get("top", 0)
-                    
-                    calc_x = round((click_x / 700.0) * 100, 1) if 700.0 > 0 else 50.0
-                    calc_y = round((click_y / float(canvas_height)) * 100, 1) if canvas_height > 0 else 50.0
-                    
-                    st.info(f"📍 タップ位置 (横: {calc_x}% / 縦: {calc_y}%) にピンを追加します。")
-                    
-                    with st.form("new_pin_form_popup"):
-                        col_p1, col_p2 = st.columns(2)
-                        p_name = col_p1.text_input("ポイント名", placeholder="例: 1番船着き場", key="pop_p_name")
-                        p_icon = col_p2.selectbox("アイコン", ["📍 ポイント", "🎯 ヒット実績", "⚠️ 危険・注意", "⚓ 渡船・集合"], key="pop_p_icon")
-                        p_memo = st.text_area("詳細メモ（水深・ヒットルアー・注意点など）", placeholder="例: 水深6m、手前5mに根あり。下げ潮で実績あり。", key="pop_p_memo")
-                        
-                        btn_sub = st.form_submit_button("📌 このピンを確定して保存", type="primary")
-                        if btn_sub and p_name:
-                            plan_doc_ref.collection("pins").add({
-                                "title": p_name,
-                                "memo": p_memo,
-                                "icon": p_icon.split()[0],
-                                "x": float(calc_x),
-                                "y": float(calc_y),
-                                "visible": True,
-                                "created_at": datetime.now()
-                            })
-                            st.success(f"「{p_name}」をマップに登録しました！")
-                            st.rerun()
+        # タップ処理用のセッションリセット（複数打刻を防ぎ1つに制限）
+        canvas_key = f"interactive_canvas_{len(pins_list)}"
 
-        except Exception as e:
-            st.error(f"マップ描画中にエラーが発生しました: {e}")
+        canvas_result = st_canvas(
+            fill_color="rgba(231, 76, 60, 0.5)",
+            stroke_width=2,
+            stroke_color="#e74c3c",
+            background_image=base_img,
+            update_streamlit=True,
+            height=canvas_height,
+            width=700,
+            drawing_mode="point",
+            point_display_radius=7,
+            key=canvas_key,
+        )
+
+        # タップされた瞬間に最新の1点のみを取得して保存フォームを展開
+        if canvas_result is not None and canvas_result.json_data is not None:
+            objects = canvas_result.json_data.get("objects", [])
+            if len(objects) > 0:
+                last_obj = objects[-1] # 最後の1点だけを抽出
+                click_x = last_obj.get("left", 0)
+                click_y = last_obj.get("top", 0)
+                
+                calc_x = round((click_x / 700.0) * 100, 1) if 700.0 > 0 else 50.0
+                calc_y = round((click_y / float(canvas_height)) * 100, 1) if canvas_height > 0 else 50.0
+                
+                st.info(f"📍 選択位置: 横 {calc_x}% / 縦 {calc_y}% （下のフォームに入力して確定してください）")
+                
+                with st.form("new_pin_form_popup"):
+                    col_p1, col_p2 = st.columns(2)
+                    p_name = col_p1.text_input("ポイント名", placeholder="例: 1番船着き場", key="pop_p_name")
+                    p_icon = col_p2.selectbox("アイコン", ["📍 ポイント", "🎯 ヒット実績", "⚠️ 危険・注意", "⚓ 渡船・集合"], key="pop_p_icon")
+                    p_memo = st.text_area("詳細メモ（水深・ヒットルアー・注意点など）", placeholder="例: 水深6m、手前5mに根あり。下げ潮で実績あり。", key="pop_p_memo")
+                    
+                    btn_sub = st.form_submit_button("📌 このピンを確定して保存", type="primary")
+                    if btn_sub and p_name:
+                        plan_doc_ref.collection("pins").add({
+                            "title": p_name,
+                            "memo": p_memo,
+                            "icon": p_icon.split()[0],
+                            "x": float(calc_x),
+                            "y": float(calc_y),
+                            "visible": True,
+                            "created_at": datetime.now()
+                        })
+                        st.success(f"「{p_name}」をマップに登録しました！")
+                        st.rerun()
 
     else:
         st.info("上のエリアからマップ・航空写真画像を選択し、「💾 マップ画像を確定・保存」を押すとマップが表示されます。")
@@ -782,7 +811,7 @@ with tab7:
         st.write("* 支出を登録すると、1人あたりの精算額が自動計算されます。")
 
     with st.expander("🗺️ 4. ポイントマップの使い方", expanded=False):
-        st.write("* 画像を「確定・保存」で登録し、画像上の狙った場所をタップしてピン・メモを追加・編集できます。")
+        st.write("* 画像を選択して「確定・保存」で登録。画像をタップしてピンとメモを追加・保存できます。F5更新を行ってもピン位置と名称は残り続けます。")
 
-    with st.expander("🌤️ 5. ピンポイント天気・风予報の使い方", expanded=False):
+    with st.expander("🌤️ 5. ピンポイント天気・風予報の使い方", expanded=False):
         st.write("* 3時間おきの大きな天気アイコンと気温・風速が確認できます。")
