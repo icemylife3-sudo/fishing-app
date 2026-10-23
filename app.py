@@ -5,10 +5,9 @@ from firebase_admin import credentials, firestore
 from datetime import date, datetime, timedelta
 import os
 import requests
-from PIL import Image
+import urllib.request
+from PIL import Image, ImageDraw, ImageFont
 from streamlit_drawable_canvas import st_canvas
-import streamlit.components.v1 as components
-import base64
 
 # ---------------------------------------------------------
 # ページ設定 & 自動翻訳無効化ヘッダー
@@ -23,6 +22,23 @@ st.markdown("""
     </head>
     </html>
 """, unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# 日本語フォントの自動ダウンロード（文字化け完全対策）
+# ---------------------------------------------------------
+@st.cache_resource
+def get_jp_font(size=14):
+    font_path = "NotoSansJP-Regular.ttf"
+    if not os.path.exists(font_path):
+        try:
+            url = "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP-Regular.ttf"
+            urllib.request.urlretrieve(url, font_path)
+        except Exception as e:
+            pass
+    try:
+        return ImageFont.truetype(font_path, size)
+    except:
+        return ImageFont.load_default()
 
 # ---------------------------------------------------------
 # Firebase 初期化
@@ -502,7 +518,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (文字化けゼロ・赤丸重複完全排除統合版)
+# ⑤ ポイントマップ (文字化け・赤丸・HTML漏れ 完全解決版)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -542,74 +558,75 @@ with tab5:
     if current_map_path and os.path.exists(current_map_path):
         st.subheader("📍 画像上をタップ/クリックしてピンを設置")
         
-        # HTML/CSSによるピン＆日本語ラベルオーバーレイ（文字化け完全回避）
-        pins_overlay_html = ""
-        if show_all_pins:
-            for p in pins_list:
-                if p.get("visible", True):
-                    px = p.get("x", 50)
-                    py = p.get("y", 50)
-                    icon_symbol = p.get("icon", "📍")
-                    p_title = p.get("title", "ポイント")
-                    pins_overlay_html += f"""
-                    <div style="position: absolute; left: {px}%; top: {py}%; transform: translate(-50%, -100%); pointer-events: none; text-align: center; z-index: 10;">
-                        <span style="font-size: 24px; filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.8));">{icon_symbol}</span><br/>
-                        <span style="background: rgba(0,0,0,0.85); color: #ffffff; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; white-space: nowrap; border: 1px solid #ffffff; font-family: sans-serif;">{p_title}</span>
-                    </div>
-                    """
-        
-        base_img = Image.open(current_map_path)
+        # 1. 日本語フォントを読み込み
+        font = get_jp_font(15)
+
+        # 2. 地図画像の準備と合成処理
+        base_img = Image.open(current_map_path).convert("RGB")
         w, h = base_img.size
         target_width = 750
         canvas_height = int(h * (target_width / float(w))) if w > 0 else 500
 
-        # リセットカウンターでタップ痕跡の赤丸が複数残るのを防止
-        reset_cnt = st.session_state.get("canvas_reset_counter", 0)
-        canvas_key = f"perfect_map_canvas_{len(pins_list)}_{reset_cnt}"
+        draw_img = base_img.copy()
+        draw = ImageDraw.Draw(draw_img)
+        
+        if show_all_pins:
+            for p in pins_list:
+                if p.get("visible", True):
+                    px = int((p.get("x", 50) / 100.0) * w)
+                    py = int((p.get("y", 50) / 100.0) * h)
+                    r = max(8, int(w * 0.015))
+                    
+                    # 赤丸ピンの描画
+                    draw.ellipse((px - r, py - r, px + r, py + r), fill="#e74c3c", outline="#ffffff", width=2)
+                    
+                    # ポイント名の文字列
+                    label_text = f" {p.get('title', 'ポイント')} "
+                    
+                    # テキストサイズの算出と背景の黒帯描画
+                    if hasattr(font, "getbbox"):
+                        bbox = font.getbbox(label_text)
+                        text_w = bbox[2] - bbox[0]
+                        text_h = bbox[3] - bbox[1]
+                    else:
+                        text_w = len(label_text) * 14
+                        text_h = 16
+                        
+                    draw.rectangle([px + r + 4, py - r - 2, px + r + 4 + text_w + 4, py - r + text_h + 4], fill="#222222")
+                    draw.text((px + r + 8, py - r), label_text, fill="#ffffff", font=font)
 
-        # マップコンテナにオーバーレイピンを重畳表示
-        st.markdown(f"""
-        <style>
-            .map-container-{reset_cnt} {{
-                position: relative;
-                width: {target_width}px;
-                max-width: 100%;
-                margin-bottom: -{canvas_height}px;
-                pointer-events: none;
-                z-index: 5;
-            }}
-        </style>
-        <div class="map-container-{reset_cnt}" style="height: {canvas_height}px;">
-            {pins_overlay_html}
-        </div>
-        """, unsafe_allow_html=True)
+        # 3. 合成済み画像の保存
+        rendered_temp_path = os.path.join("uploads", f"temp_single_map_{plan_id}.jpg")
+        draw_img.save(rendered_temp_path, "JPEG", quality=85)
 
-        # タップ操作受信用キャンバス（完全な透明ベース）
+        # 4. タップ領域（赤丸が増えない魔法の設定: point_display_radius=0）
+        reset_cnt = st.session_state.get(f"canvas_reset_{plan_id}", 0)
+        canvas_key = f"perfect_map_canvas_{plan_id}_{reset_cnt}"
+
         canvas_result = st_canvas(
-            fill_color="rgba(231, 76, 60, 0.4)",
-            stroke_width=2,
-            stroke_color="#e74c3c",
-            background_image=base_img,
+            fill_color="rgba(0, 0, 0, 0)",
+            stroke_width=0,
+            background_image=Image.open(rendered_temp_path),
             update_streamlit=True,
             height=canvas_height,
             width=target_width,
             drawing_mode="point",
-            point_display_radius=7,
+            point_display_radius=0, # ★透明にすることで画面に点が残りません！
             key=canvas_key,
         )
 
-        # タップ直後に最後の一箇所のみ抽出しフォーム開く
+        # 5. タップ位置の取得とフォーム展開
         if canvas_result is not None and canvas_result.json_data is not None:
             objects = canvas_result.json_data.get("objects", [])
             if len(objects) > 0:
-                last_obj = objects[-1]
+                last_obj = objects[-1] # 直近の1クリックのみ取得
                 click_x = last_obj.get("left", 0)
                 click_y = last_obj.get("top", 0)
                 
                 calc_x = round((click_x / float(target_width)) * 100, 1)
                 calc_y = round((click_y / float(canvas_height)) * 100, 1)
                 
-                st.info(f"📍 選択された位置: 横 {calc_x}% / 縦 {calc_y}% （下のフォームに入力して確定してください）")
+                st.info(f"📍 選択された位置: 横 {calc_x}% / 縦 {calc_y}% （下に入力して確定してください）")
                 
                 with st.form("new_pin_form_popup"):
                     col_p1, col_p2 = st.columns(2)
@@ -628,8 +645,8 @@ with tab5:
                             "visible": True,
                             "created_at": datetime.now()
                         })
-                        # キャンバスを再セットして選択赤丸を即時消去
-                        st.session_state["canvas_reset_counter"] = reset_cnt + 1
+                        # 保存後、キャンバスをリセットしてフォームを閉じる
+                        st.session_state[f"canvas_reset_{plan_id}"] = reset_cnt + 1
                         st.success(f"「{p_name}」をマップに登録しました！")
                         st.rerun()
 
