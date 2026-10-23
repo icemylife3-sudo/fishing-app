@@ -5,7 +5,8 @@ from firebase_admin import credentials, firestore
 from datetime import date, datetime, timedelta
 import os
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
+from streamlit_drawable_canvas import st_canvas
 
 # ---------------------------------------------------------
 # ページ設定 & 自動翻訳無効化ヘッダー
@@ -80,9 +81,9 @@ def delete_plan(plan_id):
     db.collection("plans").document(plan_id).delete()
 
 # ---------------------------------------------------------
-# 画像軽量化保存（フリーズ根本防止）
+# 画像軽量化保存（フリーズの根本防止）
 # ---------------------------------------------------------
-def save_optimized_image(uploaded_file, save_path, max_width=1000):
+def save_optimized_image(uploaded_file, save_path, max_width=900):
     os.makedirs("uploads", exist_ok=True)
     img = Image.open(uploaded_file)
     if img.mode in ("RGBA", "P"):
@@ -499,7 +500,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (ネイティブ高速表示・フリーズ完全防止)
+# ⑤ ポイントマップ (直接タップ/クリック打刻＆フリーズゼロ完全版)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -513,11 +514,12 @@ with tab5:
         st.subheader("1. 釣場画像・図面の管理")
         map_img_file = st.file_uploader("航空写真やマップ画像をアップロード (JPEG/PNG)", type=["jpg", "jpeg", "png"], key="map_img_uploader")
         
+        # 画像選択時、即時保存してアップローダー状態をクリア（フリーズ完全防止）
         if map_img_file is not None:
             saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
             save_optimized_image(map_img_file, saved_map_path)
             plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
-            st.success("マップ画像を登録しました！")
+            st.success("マップ画像を保存しました！")
             st.rerun()
             
         if current_map_path and os.path.exists(current_map_path):
@@ -531,28 +533,11 @@ with tab5:
                 st.rerun()
 
     with col_map2:
-        st.subheader("2. ピンの打刻・設置")
+        st.subheader("2. ピンの情報入力")
         pin_title = st.text_input("ポイント名", placeholder="例: 1番船着き場 / 手前の根", key="pin_title_in")
         pin_memo = st.text_input("状況・メモ", placeholder="例: 手前5m根掛かり注意 / 水深6m", key="pin_memo_in")
         pin_icon = st.selectbox("アイコン", ["📍 ポイント", "🎯 ヒット実績", "⚠️ 危険・注意", "⚓ 渡船・集合"], key="pin_icon_in")
-        
-        st.markdown("**位置指定 (画像上のパーセンテージ)**")
-        col_pos_a, col_pos_b = st.columns(2)
-        set_x = col_pos_a.number_input("横位置 X (%)", min_value=0.0, max_value=100.0, value=50.0, step=1.0, key="pin_x_num")
-        set_y = col_pos_b.number_input("縦位置 Y (%)", min_value=0.0, max_value=100.0, value=50.0, step=1.0, key="pin_y_num")
-        
-        if st.button("📌 この位置にピンを設置", key="btn_save_pin") and pin_title:
-            plan_doc_ref.collection("pins").add({
-                "title": pin_title,
-                "memo": pin_memo,
-                "icon": pin_icon.split()[0],
-                "x": float(set_x),
-                "y": float(set_y),
-                "visible": True,
-                "created_at": datetime.now()
-            })
-            st.success(f"「{pin_title}」にピンを設置しました！")
-            st.rerun()
+        st.caption("👈 下の画像上を直接タップ/クリックするとその場所にピンが打刻されます！")
 
     st.divider()
 
@@ -562,31 +547,66 @@ with tab5:
     show_all_pins = st.toggle("全ピンを一括表示/非表示", value=True, key="toggle_all_pins")
     
     if current_map_path and os.path.exists(current_map_path):
-        st.subheader("📍 ポイントマップ プレビュー")
+        st.subheader("📍 画像を直接タップ/クリックしてピンを打つ")
         
-        # PILで軽量かつ確実にピンを画像上に高速描画
+        # ベース画像上に既存の全ピンを描画
         base_img = Image.open(current_map_path).convert("RGB")
-        draw = ImageDraw.Draw(base_img)
         w, h = base_img.size
+        
+        draw_img = base_img.copy()
+        draw = ImageDraw.Draw(draw_img)
         
         if show_all_pins:
             for p in pins_list:
                 if p.get("visible", True):
                     px = int((p.get("x", 50) / 100.0) * w)
                     py = int((p.get("y", 50) / 100.0) * h)
-                    
-                    # 赤ピンマーカーを描画
-                    r = max(8, int(w * 0.015))
+                    r = max(10, int(w * 0.02))
                     draw.ellipse((px - r, py - r, px + r, py + r), fill="#e74c3c", outline="#ffffff", width=3)
-                    
-                    # ラベル文字列を描画
-                    label = f" {p.get('title')} "
-                    draw.text((px + r + 4, py - r), label, fill="#ffffff")
+                    draw.text((px + r + 4, py - r), f" {p.get('title')} ", fill="#ffffff")
 
-        # Streamlitネイティブで表示（フリーズ一切なし）
-        st.image(base_img, use_container_width=True)
+        # キャンバスコンポーネント（直接タップ位置を自動ピクセル取得）
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 165, 0, 0.3)",
+            stroke_width=2,
+            stroke_color="#e74c3c",
+            background_image=draw_img,
+            update_streamlit=True,
+            height=int(h * (700 / float(w))) if w > 0 else 500,
+            width=700,
+            drawing_mode="point",
+            point_display_radius=8,
+            key="interactive_map_canvas",
+        )
+
+        # クリック/タップされた瞬間、即座にピン情報をFirestoreへ保存
+        if canvas_result.json_data is not None:
+            objects = canvas_result.json_data.get("objects", [])
+            if len(objects) > 0:
+                last_obj = objects[-1]
+                click_x = last_obj.get("left", 0)
+                click_y = last_obj.get("top", 0)
+                
+                # キャンバスサイズ (700px) からパーセンテージ位置（0〜100%）に自動換算
+                calc_x = round((click_x / 700.0) * 100, 1)
+                calc_y = round((click_y / (h * (700 / float(w)))) * 100, 1) if w > 0 else 50.0
+                
+                target_title = pin_title if pin_title else f"ポイント({calc_x}%, {calc_y}%)"
+                
+                plan_doc_ref.collection("pins").add({
+                    "title": target_title,
+                    "memo": pin_memo,
+                    "icon": pin_icon.split()[0],
+                    "x": float(calc_x),
+                    "y": float(calc_y),
+                    "visible": True,
+                    "created_at": datetime.now()
+                })
+                st.success(f"「{target_title}」の位置にピンを設置しました！")
+                st.rerun()
+
     else:
-        st.info("上のエリアからマップ・航空写真画像をアップロードすると、ここにピン付きマップが表示されます。")
+        st.info("上のエリアからマップ・航空写真画像をアップロードすると、ここにインタラクティブタップマップが表示されます。")
 
     if pins_list:
         st.subheader("📋 ポイント一覧・表示切替・削除")
@@ -761,7 +781,7 @@ with tab7:
         st.write("* 支出を登録すると、1人あたりの精算額が自動計算されます。")
 
     with st.expander("🗺️ 4. ポイントマップの使い方", expanded=False):
-        st.write("* マップ画像のアップロード、削除、ピンの打刻と表示切替を行えます。")
+        st.write("* マップ画像のアップロード、削除、画像を直接タップしてのピン設置と表示切替を行えます。")
 
     with st.expander("🌤️ 5. ピンポイント天気・風予報の使い方", expanded=False):
         st.write("* 3時間おきの大きな天気アイコンと気温・風速が確認できます。")
