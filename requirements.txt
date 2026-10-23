@@ -4,3 +4,4 @@ firebase-admin
 requests
 Pillow
 streamlit-drawable-canvas
+streamlit-image-coordinates
