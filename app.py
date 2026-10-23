@@ -24,17 +24,35 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 日本語フォントの自動ダウンロード（文字化け完全対策）
+# 日本語フォントの自動読み込み（文字化け完全対策）
 # ---------------------------------------------------------
 @st.cache_resource
 def get_jp_font(size=14):
-    font_path = "NotoSansJP-Regular.ttf"
+    # OS（特にWindows）に標準インストールされている日本語フォントを優先探索
+    font_paths = [
+        "C:\\Windows\\Fonts\\meiryo.ttc",       # Windows メイリオ
+        "C:\\Windows\\Fonts\\msgothic.ttc",     # Windows MSゴシック
+        "C:\\Windows\\Fonts\\yuGothM.ttc",      # Windows 遊ゴシック
+        "/System/Library/Fonts/Hiragino Sans W4.ttc", # Mac
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc" # Linux
+    ]
+    
+    for path in font_paths:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except:
+                pass
+                
+    # ローカルに見つからなかった場合のフォールバック（自動ダウンロード）
+    font_path = "NotoSansCJKjp-Regular.otf"
     if not os.path.exists(font_path):
         try:
-            url = "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP-Regular.ttf"
+            url = "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf"
             urllib.request.urlretrieve(url, font_path)
-        except Exception as e:
+        except Exception:
             pass
+            
     try:
         return ImageFont.truetype(font_path, size)
     except:
@@ -518,7 +536,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (文字化け・赤丸・HTML漏れ 完全解決版)
+# ⑤ ポイントマップ (文字化け＆赤丸増殖 完全解決版)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -557,11 +575,12 @@ with tab5:
     
     if current_map_path and os.path.exists(current_map_path):
         st.subheader("📍 画像上をタップ/クリックしてピンを設置")
+        st.caption("💡 **ヒント:** 複数回クリックした場合は、**最後にクリックした赤い点**のみが保存対象になります。保存すると過去のクリック跡はリセットされます。")
         
-        # 1. 日本語フォントを読み込み
+        # 1. 日本語フォントを読み込み（Windows標準フォント等を自動適用）
         font = get_jp_font(15)
 
-        # 2. 地図画像の準備と合成処理
+        # 2. 地図画像の準備と合成処理（純粋な画像処理なのでHTMLバグは起きません）
         base_img = Image.open(current_map_path).convert("RGB")
         w, h = base_img.size
         target_width = 750
@@ -589,29 +608,30 @@ with tab5:
                         text_w = bbox[2] - bbox[0]
                         text_h = bbox[3] - bbox[1]
                     else:
-                        text_w = len(label_text) * 14
+                        text_w = len(label_text) * 15
                         text_h = 16
                         
                     draw.rectangle([px + r + 4, py - r - 2, px + r + 4 + text_w + 4, py - r + text_h + 4], fill="#222222")
+                    # 日本語フォントを使用して文字化けを防止
                     draw.text((px + r + 8, py - r), label_text, fill="#ffffff", font=font)
 
         # 3. 合成済み画像の保存
         rendered_temp_path = os.path.join("uploads", f"temp_single_map_{plan_id}.jpg")
         draw_img.save(rendered_temp_path, "JPEG", quality=85)
 
-        # 4. タップ領域（赤丸が増えない魔法の設定: point_display_radius=0）
+        # 4. タップ領域（見えるように戻し、最後の一点のみ有効とする）
         reset_cnt = st.session_state.get(f"canvas_reset_{plan_id}", 0)
         canvas_key = f"perfect_map_canvas_{plan_id}_{reset_cnt}"
 
         canvas_result = st_canvas(
-            fill_color="rgba(0, 0, 0, 0)",
+            fill_color="rgba(231, 76, 60, 0.4)",
             stroke_width=0,
             background_image=Image.open(rendered_temp_path),
             update_streamlit=True,
             height=canvas_height,
             width=target_width,
             drawing_mode="point",
-            point_display_radius=0, # ★透明にすることで画面に点が残りません！
+            point_display_radius=6, # ★ 押した場所が見えるように戻しました！
             key=canvas_key,
         )
 
@@ -619,7 +639,7 @@ with tab5:
         if canvas_result is not None and canvas_result.json_data is not None:
             objects = canvas_result.json_data.get("objects", [])
             if len(objects) > 0:
-                last_obj = objects[-1] # 直近の1クリックのみ取得
+                last_obj = objects[-1] # ★直近の1クリックのみ取得
                 click_x = last_obj.get("left", 0)
                 click_y = last_obj.get("top", 0)
                 
@@ -645,7 +665,7 @@ with tab5:
                             "visible": True,
                             "created_at": datetime.now()
                         })
-                        # 保存後、キャンバスをリセットしてフォームを閉じる
+                        # ★保存後、キャンバスのIDを更新して新品にする（古い赤丸が消滅します）
                         st.session_state[f"canvas_reset_{plan_id}"] = reset_cnt + 1
                         st.success(f"「{p_name}」をマップに登録しました！")
                         st.rerun()
