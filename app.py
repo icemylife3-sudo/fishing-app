@@ -5,8 +5,6 @@ from firebase_admin import credentials, firestore
 from datetime import date, datetime, timedelta
 import os
 import requests
-import streamlit.components.v1 as components
-import base64
 from PIL import Image
 
 # ---------------------------------------------------------
@@ -82,9 +80,9 @@ def delete_plan(plan_id):
     db.collection("plans").document(plan_id).delete()
 
 # ---------------------------------------------------------
-# 画像圧縮ヘルパー関数（フリーズ防止用）
+# 画像軽量化保存（フリーズ防止）
 # ---------------------------------------------------------
-def save_optimized_image(uploaded_file, save_path, max_width=1200):
+def save_optimized_image(uploaded_file, save_path, max_width=1000):
     os.makedirs("uploads", exist_ok=True)
     img = Image.open(uploaded_file)
     if img.mode in ("RGBA", "P"):
@@ -93,7 +91,7 @@ def save_optimized_image(uploaded_file, save_path, max_width=1200):
         ratio = max_width / float(img.width)
         new_height = int(float(img.height) * ratio)
         img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
-    img.save(save_path, "JPEG", quality=80)
+    img.save(save_path, "JPEG", quality=75)
 
 # ---------------------------------------------------------
 # 地名検索（国内高精度対応）
@@ -501,7 +499,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (画像最適化・フリーズ防止 & マップ削除機能)
+# ⑤ ポイントマップ (安定版)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -513,16 +511,15 @@ with tab5:
 
     with col_map1:
         st.subheader("1. 釣場画像・図面の管理")
-        map_img_file = st.file_uploader("航空写真やマップ画像をアップロード", type=["jpg", "jpeg", "png"], key="map_img_upload")
+        map_img_file = st.file_uploader("航空写真やマップ画像をアップロード (JPEG/PNG)", type=["jpg", "jpeg", "png"], key="map_img_upload")
         
         if map_img_file is not None:
             saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
             save_optimized_image(map_img_file, saved_map_path)
             plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
-            st.success("マップ画像を最適化して登録しました！")
+            st.success("マップ画像を登録しました！")
             st.rerun()
             
-        # マップ画像の削除ボタン機能
         if current_map_path and os.path.exists(current_map_path):
             if st.button("🗑️ 現在のマップ画像を削除", key="btn_del_map_img", type="primary"):
                 try:
@@ -534,16 +531,14 @@ with tab5:
                 st.rerun()
 
     with col_map2:
-        st.subheader("2. ピン位置の入力")
-        st.caption("👇 下の画像上の設置したい位置の「横 X %」「縦 Y %」を入力またはスライダー指定してください。")
-        
-        col_pos_a, col_pos_b = st.columns(2)
-        set_x = col_pos_a.slider("位置 (横 X %)", 0.0, 100.0, 50.0, 0.5, key="pin_x_num")
-        set_y = col_pos_b.slider("位置 (縦 Y %)", 0.0, 100.0, 50.0, 0.5, key="pin_y_num")
-        
+        st.subheader("2. ピンの追加")
         pin_title = st.text_input("ポイント名", placeholder="例: 1番船着き場 / 手前の根", key="pin_title_in")
         pin_memo = st.text_input("状況・メモ", placeholder="例: 手前5m根掛かり注意 / 水深6m", key="pin_memo_in")
         pin_icon = st.selectbox("アイコンタイプ", ["📍 ポイント", "🎯 ヒット実績", "⚠️ 危険・注意", "⚓ 渡船・集合"], key="pin_icon_in")
+        
+        col_pos_a, col_pos_b = st.columns(2)
+        set_x = col_pos_a.slider("位置 (横 X %)", 0.0, 100.0, 50.0, 1.0, key="pin_x_slider")
+        set_y = col_pos_b.slider("位置 (縦 Y %)", 0.0, 100.0, 50.0, 1.0, key="pin_y_slider")
         
         if st.button("ピンを打刻して保存", key="btn_save_pin") and pin_title:
             plan_doc_ref.collection("pins").add({
@@ -563,35 +558,13 @@ with tab5:
     pins_docs = plan_doc_ref.collection("pins").stream()
     pins_list = [{"id": d.id, **d.to_dict()} for d in pins_docs]
     
-    col_ctrl1, col_ctrl2 = st.columns([1, 2])
-    show_all_pins = col_ctrl1.toggle("全ピンを一括表示/非表示", value=True, key="toggle_all_pins")
+    show_all_pins = st.toggle("全ピンを一括表示/非表示", value=True, key="toggle_all_pins")
     
     if current_map_path and os.path.exists(current_map_path):
         st.subheader("📍 ポイントマップ プレビュー")
-        
-        with open(current_map_path, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode()
-        
-        pins_html = ""
-        if show_all_pins:
-            for p in pins_list:
-                if p.get("visible", True):
-                    pins_html += f"""
-                    <div style="position: absolute; left: {p.get('x', 50)}%; top: {p.get('y', 50)}%; transform: translate(-50%, -100%); pointer-events: none; text-align: center;">
-                        <span style="font-size: 26px; filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.5));">{p.get('icon', '📍')}</span><br/>
-                        <span style="background: rgba(0,0,0,0.85); color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; font-weight: bold;">{p.get('title')}</span>
-                    </div>
-                    """
-        
-        map_component_code = f"""
-        <div id="container" style="position: relative; width: 100%; border: 2px solid #2a5298; border-radius: 8px; overflow: hidden; background: #111; text-align: center;">
-            <img id="map-img" src="data:image/jpeg;base64,{encoded_string}" style="width: 100%; height: auto; display: block; object-fit: contain;" />
-            {pins_html}
-        </div>
-        """
-        components.html(map_component_code, height=520, scrolling=False)
+        st.image(current_map_path, use_container_width=True)
     else:
-        st.info("上の「画像ファイルを選択」から地図・航空写真（JPEG/PNG）をアップロードすると、ここにマップが表示されます。")
+        st.info("上の「画像ファイルを選択」から地図・航空写真をアップロードするとマップが表示されます。")
 
     if pins_list:
         st.subheader("📋 ポイント一覧・表示切替・削除")
@@ -699,7 +672,6 @@ with tab7:
     st.header("📖 簡易説明書 & 📄 遠征のしおり発行")
     
     st.subheader("📄 遠征のしおり（1枚デザイン・レポート）")
-    st.caption("釣行完了後、ボタンを押すと全体の行程・割り勘精算結果・釣果写真をまとめた美しいレポートが動的描画されます。")
     
     if "show_report_card" not in st.session_state:
         st.session_state.show_report_card = False
@@ -729,83 +701,45 @@ with tab7:
             sorted_catches = sorted(catches_list, key=lambda x: float(x.get("size", 0)), reverse=True)
             big_fish_title = f"{sorted_catches[0].get('species', '-')} ({sorted_catches[0].get('size', 0)}cm)"
 
-        report_html = f"""
-        <div style="background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); border-radius: 16px; padding: 30px; font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 850px; margin: 0 auto; box-shadow: 0 10px 20px rgba(0,0,0,0.15); color: #333;">
-            <div style="background: #1e3c72; background: linear-gradient(to right, #2a5298, #1e3c72); color: white; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 25px;">
-                <h1 style="margin: 0; font-size: 28px; letter-spacing: 1px;">🎣 {selected_plan_name} 遠征レポート</h1>
-                <p style="margin: 8px 0 0 0; opacity: 0.9; font-size: 14px;">🗓️ {s_date} 〜 {e_date} | 👥 参加メンバー: {', '.join(members)}</p>
-            </div>
-            
-            <div style="display: flex; gap: 15px; margin-bottom: 25px;">
-                <div style="flex: 1; background: white; padding: 18px; border-radius: 12px; text-align: center; border-top: 4px solid #2a5298; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                    <span style="font-size: 13px; color: #666; font-weight: bold;">💰 総支出 / 1人あたり精算</span>
-                    <h2 style="margin: 6px 0; color: #1e3c72; font-size: 22px;">¥{total_exp:,} <span style="font-size: 15px; color: #555;">(¥{per_person:,})</span></h2>
-                </div>
-                <div style="flex: 1; background: white; padding: 18px; border-radius: 12px; text-align: center; border-top: 4px solid #f39c12; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                    <span style="font-size: 13px; color: #666; font-weight: bold;">🏆 本遠征のビッグワン記録</span>
-                    <h2 style="margin: 6px 0; color: #d35400; font-size: 22px;">{big_fish_title}</h2>
-                </div>
-            </div>
-            
-            <div style="background: white; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                <h3 style="margin-top: 0; color: #1e3c72; border-bottom: 2px solid #eee; padding-bottom: 8px;">🗓️ 旅の行程ハイライト</h3>
-                <ul style="padding-left: 20px; margin-bottom: 0; line-height: 1.8;">
-        """
-        for itin in itin_list[:6]:
-            report_html += f"<li><b>{itin.get('date_time', '')}</b> @ {itin.get('location', '-')} — {itin.get('activity', '-')}</li>"
-        if not itin_list:
-            report_html += "<li style='color: #888;'>行程未登録</li>"
-
-        report_html += f"""
-                </ul>
-            </div>
-
-            <div style="background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                <h3 style="margin-top: 0; color: #1e3c72; border-bottom: 2px solid #eee; padding-bottom: 8px;">🐟 釣果アーカイブ ({len(catches_list)}件)</h3>
-                <ul style="padding-left: 20px; margin-bottom: 0; line-height: 1.8;">
-        """
-        for c in catches_list[:8]:
-            report_html += f"<li><b>{c.get('catch_date')}</b> : {c.get('species')} ({c.get('size')}cm / {c.get('count')}匹) @ {c.get('location')} - {c.get('lure')}</li>"
-        if not catches_list:
-            report_html += "<li style='color: #888;'>釣果記録なし</li>"
-
-        report_html += """
-                </ul>
-            </div>
-            <div style="text-align: right; margin-top: 20px; font-size: 12px; color: #777;">
-                Generated by 共有釣行管理アプリ 🎣
-            </div>
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #eef2f3 0%, #8e9eab 100%); border-radius: 12px; padding: 20px; color: #333; margin-bottom: 20px;">
+            <h2 style="color: #1e3c72; margin-top: 0;">🎣 {selected_plan_name} 遠征レポート</h2>
+            <p>🗓️ {s_date} 〜 {e_date} | 👥 メンバー: {', '.join(members)}</p>
+            <hr/>
+            <p>💰 <b>総費用:</b> ¥{total_exp:,} (1人あたり: ¥{per_person:,})</p>
+            <p>🏆 <b>ビッグワン:</b> {big_fish_title}</p>
         </div>
-        """
-        components.html(report_html, height=620, scrolling=True)
-        st.info("💡 上の「しおりカード」をスクショ保存すると、LINE等で思い出として共有できます！")
+        """, unsafe_allow_html=True)
+
+        st.subheader("🗓️ 旅の行程一覧")
+        if itin_list:
+            for itin in itin_list:
+                st.write(f"- **{itin.get('date_time')}** @ {itin.get('location')} : {itin.get('activity')}")
+        else:
+            st.caption("行程未登録")
+
+        st.subheader("🐟 釣果アーカイブ")
+        if catches_list:
+            for c in catches_list:
+                st.write(f"- **{c.get('catch_date')}** : {c.get('species')} ({c.get('size')}cm) @ {c.get('location')}")
+        else:
+            st.caption("釣果未登録")
 
     st.divider()
 
     st.subheader("📖 アプリの簡易ガイド")
     
     with st.expander("📁 1. 釣行計画の追加・切り替え", expanded=False):
-        st.write("""
-        * **切り替え**: 左側サイドバーの「現在の計画」から過去・未来の遠征を選択できます。
-        * **日程更新**: サイドバーの「開始日・終了日」を変更するとリアルタイムで反映されます。
-        """)
+        st.write("* 左側サイドバーから計画の選択・作成・削除を行えます。")
 
     with st.expander("🗓️ 2. 行程表の使い方", expanded=False):
-        st.write("""
-        * 集合、渡船、出港時刻を登録可能。右側の **ゴミ箱アイコン（🗑️）** で削除できます。
-        """)
+        st.write("* 集合時間や出港予定などを登録・削除できます。")
 
     with st.expander("💰 3. 旅費割り勘計算の使い方", expanded=False):
-        st.write("""
-        * 船代、ガソリン代などを「支払者」と登録するだけで、均等負担額と立替差額を自動計算します。
-        """)
+        st.write("* 支出を登録すると、1人あたりの精算額が自動計算されます。")
 
-    with st.expander("🗺️ 4. インタラクティブポイントマップの使い方", expanded=False):
-        st.write("""
-        * 航空写真やマップ画像をアップロード後、スライダーでピン（X%, Y%）をスムーズに位置調整できます。不要になったマップ画像は「🗑️ 現在のマップ画像を削除」ボタンで消去可能です。
-        """)
+    with st.expander("🗺️ 4. ポイントマップの使い方", expanded=False):
+        st.write("* マップ画像のアップロード、削除、ピンの打刻と表示切替を行えます。")
 
     with st.expander("🌤️ 5. ピンポイント天気・風予報の使い方", expanded=False):
-        st.write("""
-        * 行程表の場所・日付が自動保持されます。3時間おきの大きな天気アイコン・気温・風速・風向きがカード形式で表示されます。
-        """)
+        st.write("* 3時間おきの大きな天気アイコンと気温・風速が確認できます。")
