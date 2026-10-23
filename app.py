@@ -5,7 +5,7 @@ from firebase_admin import credentials, firestore
 from datetime import date, datetime, timedelta
 import os
 import requests
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from streamlit_drawable_canvas import st_canvas
 
 # ---------------------------------------------------------
@@ -81,7 +81,7 @@ def delete_plan(plan_id):
     db.collection("plans").document(plan_id).delete()
 
 # ---------------------------------------------------------
-# 画像軽量化保存（フリーズの根本防止）
+# 画像軽量化保存
 # ---------------------------------------------------------
 def save_optimized_image(uploaded_file, save_path, max_width=900):
     os.makedirs("uploads", exist_ok=True)
@@ -500,7 +500,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (直接タップ/クリック打刻＆フリーズゼロ完全版)
+# ⑤ ポイントマップ (確定保存方式・ピン編集＆名前直接描写対応)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -512,18 +512,19 @@ with tab5:
 
     with col_map1:
         st.subheader("1. 釣場画像・図面の管理")
-        map_img_file = st.file_uploader("航空写真やマップ画像をアップロード (JPEG/PNG)", type=["jpg", "jpeg", "png"], key="map_img_uploader")
+        map_img_file = st.file_uploader("航空写真やマップ画像を選択 (JPEG/PNG)", type=["jpg", "jpeg", "png"], key="map_img_file_picker")
         
-        # 画像選択時、即時保存してアップローダー状態をクリア（フリーズ完全防止）
+        # フリーズ防止：確定ボタンを押した時だけ画像を保存＆リロード
         if map_img_file is not None:
-            saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
-            save_optimized_image(map_img_file, saved_map_path)
-            plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
-            st.success("マップ画像を保存しました！")
-            st.rerun()
+            if st.button("💾 マップ画像を確定・保存", key="btn_confirm_map_img", type="primary"):
+                saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
+                save_optimized_image(map_img_file, saved_map_path)
+                plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
+                st.success("マップ画像を保存しました！")
+                st.rerun()
             
         if current_map_path and os.path.exists(current_map_path):
-            if st.button("🗑️ 現在のマップ画像を削除", key="btn_del_map_img", type="primary"):
+            if st.button("🗑️ 現在のマップ画像を削除", key="btn_del_map_img"):
                 try:
                     os.remove(current_map_path)
                 except Exception:
@@ -547,9 +548,9 @@ with tab5:
     show_all_pins = st.toggle("全ピンを一括表示/非表示", value=True, key="toggle_all_pins")
     
     if current_map_path and os.path.exists(current_map_path):
-        st.subheader("📍 画像を直接タップ/クリックしてピンを打つ")
+        st.subheader("📍 画像上をタップ/クリックしてピンを打つ")
         
-        # ベース画像上に既存の全ピンを描画
+        # ベース画像上に既存の全ピンと「ポイント名」を文字合成描画
         base_img = Image.open(current_map_path).convert("RGB")
         w, h = base_img.size
         
@@ -562,10 +563,16 @@ with tab5:
                     px = int((p.get("x", 50) / 100.0) * w)
                     py = int((p.get("y", 50) / 100.0) * h)
                     r = max(10, int(w * 0.02))
+                    
+                    # 赤丸ピン描画
                     draw.ellipse((px - r, py - r, px + r, py + r), fill="#e74c3c", outline="#ffffff", width=3)
-                    draw.text((px + r + 4, py - r), f" {p.get('title')} ", fill="#ffffff")
+                    
+                    # ポイント名をマップ上に直接文字描画
+                    label_text = f" {p.get('title', 'ポイント')} "
+                    draw.rectangle([px + r + 2, py - r - 2, px + r + (len(label_text) * 12), py + r + 2], fill="rgba(0,0,0,0.7)")
+                    draw.text((px + r + 4, py - r), label_text, fill="#ffffff")
 
-        # キャンバスコンポーネント（直接タップ位置を自動ピクセル取得）
+        # インタラクティブ・キャンバス描画
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_width=2,
@@ -579,7 +586,7 @@ with tab5:
             key="interactive_map_canvas",
         )
 
-        # クリック/タップされた瞬間、即座にピン情報をFirestoreへ保存
+        # クリック/タップ時にFirestoreへ座標を追加
         if canvas_result.json_data is not None:
             objects = canvas_result.json_data.get("objects", [])
             if len(objects) > 0:
@@ -587,7 +594,6 @@ with tab5:
                 click_x = last_obj.get("left", 0)
                 click_y = last_obj.get("top", 0)
                 
-                # キャンバスサイズ (700px) からパーセンテージ位置（0〜100%）に自動換算
                 calc_x = round((click_x / 700.0) * 100, 1)
                 calc_y = round((click_y / (h * (700 / float(w)))) * 100, 1) if w > 0 else 50.0
                 
@@ -606,27 +612,36 @@ with tab5:
                 st.rerun()
 
     else:
-        st.info("上のエリアからマップ・航空写真画像をアップロードすると、ここにインタラクティブタップマップが表示されます。")
+        st.info("上のエリアからマップ・航空写真画像を選択し、「💾 マップ画像を確定・保存」を押すとマップが表示されます。")
 
+    # ピンの管理・編集・削除一覧
     if pins_list:
-        st.subheader("📋 ポイント一覧・表示切替・削除")
+        st.subheader("📋 ポイント一覧・編集・削除")
         for pin in pins_list:
             p_id = pin["id"]
-            cols = st.columns([0.1, 0.3, 0.4, 0.1, 0.1])
             
-            cur_vis = pin.get("visible", True)
-            new_vis = cols[0].checkbox("", value=cur_vis, key=f"pin_vis_{p_id}")
-            if new_vis != cur_vis:
-                plan_doc_ref.collection("pins").document(p_id).update({"visible": new_vis})
-                st.rerun()
+            with st.expander(f"{pin.get('icon', '📍')} **{pin.get('title', '')}** (X:{pin.get('x')}% / Y:{pin.get('y')}%)"):
+                cols = st.columns([0.1, 0.4, 0.3, 0.1, 0.1])
                 
-            cols[1].write(f"{pin.get('icon', '📍')} **{pin.get('title', '')}**")
-            cols[2].caption(pin.get("memo", "-"))
-            cols[3].caption(f"X:{pin.get('x')}% / Y:{pin.get('y')}%")
-            
-            if cols[4].button("🗑️", key=f"del_pin_{p_id}"):
-                plan_doc_ref.collection("pins").document(p_id).delete()
-                st.rerun()
+                cur_vis = pin.get("visible", True)
+                new_vis = cols[0].checkbox("表示", value=cur_vis, key=f"pin_vis_{p_id}")
+                if new_vis != cur_vis:
+                    plan_doc_ref.collection("pins").document(p_id).update({"visible": new_vis})
+                    st.rerun()
+                    
+                cols[1].write(f"**メモ:** {pin.get('memo', '-')}")
+                
+                # インライン編集フォーム
+                edit_name = cols[2].text_input("名前編集", value=pin.get("title", ""), key=f"edit_name_{p_id}")
+                
+                if cols[3].button("💾 保存", key=f"save_pin_{p_id}"):
+                    plan_doc_ref.collection("pins").document(p_id).update({"title": edit_name})
+                    st.success("名前を更新しました！")
+                    st.rerun()
+                    
+                if cols[4].button("🗑️ 削除", key=f"del_pin_{p_id}"):
+                    plan_doc_ref.collection("pins").document(p_id).delete()
+                    st.rerun()
 
 # =========================================================
 # ⑥ 天気・風予報（3時間おきグラフィカル表示）
@@ -781,7 +796,7 @@ with tab7:
         st.write("* 支出を登録すると、1人あたりの精算額が自動計算されます。")
 
     with st.expander("🗺️ 4. ポイントマップの使い方", expanded=False):
-        st.write("* マップ画像のアップロード、削除、画像を直接タップしてのピン設置と表示切替を行えます。")
+        st.write("* 画像を選択して「確定・保存」で登録。画像をタップしてピンを配置し、名前の編集や削除を行えます。")
 
     with st.expander("🌤️ 5. ピンポイント天気・風予報の使い方", expanded=False):
         st.write("* 3時間おきの大きな天気アイコンと気温・風速が確認できます。")
