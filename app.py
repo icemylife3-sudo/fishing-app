@@ -5,6 +5,8 @@ from firebase_admin import credentials, firestore
 from datetime import date, datetime, timedelta
 import os
 import requests
+import streamlit.components.v1 as components
+import base64
 from PIL import Image
 
 # ---------------------------------------------------------
@@ -80,7 +82,7 @@ def delete_plan(plan_id):
     db.collection("plans").document(plan_id).delete()
 
 # ---------------------------------------------------------
-# 画像軽量化保存（フリーズ防止）
+# 画像軽量化保存（フリーズの根本防止）
 # ---------------------------------------------------------
 def save_optimized_image(uploaded_file, save_path, max_width=1000):
     os.makedirs("uploads", exist_ok=True)
@@ -499,7 +501,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (安定版)
+# ⑤ ポイントマップ (フリーズ完全防止・即時リセット対応)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -511,13 +513,14 @@ with tab5:
 
     with col_map1:
         st.subheader("1. 釣場画像・図面の管理")
-        map_img_file = st.file_uploader("航空写真やマップ画像をアップロード (JPEG/PNG)", type=["jpg", "jpeg", "png"], key="map_img_upload")
+        map_img_file = st.file_uploader("航空写真やマップ画像をアップロード (JPEG/PNG)", type=["jpg", "jpeg", "png"], key="map_img_uploader")
         
+        # ファイル選択時に即時保存し、uploader枠をクリア（これでフリーズを完全防止）
         if map_img_file is not None:
             saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
             save_optimized_image(map_img_file, saved_map_path)
             plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
-            st.success("マップ画像を登録しました！")
+            st.success("マップ画像を最適化して登録しました！")
             st.rerun()
             
         if current_map_path and os.path.exists(current_map_path):
@@ -531,16 +534,17 @@ with tab5:
                 st.rerun()
 
     with col_map2:
-        st.subheader("2. ピンの追加")
+        st.subheader("2. ピンの打刻・設置")
         pin_title = st.text_input("ポイント名", placeholder="例: 1番船着き場 / 手前の根", key="pin_title_in")
         pin_memo = st.text_input("状況・メモ", placeholder="例: 手前5m根掛かり注意 / 水深6m", key="pin_memo_in")
-        pin_icon = st.selectbox("アイコンタイプ", ["📍 ポイント", "🎯 ヒット実績", "⚠️ 危険・注意", "⚓ 渡船・集合"], key="pin_icon_in")
+        pin_icon = st.selectbox("アイコン", ["📍 ポイント", "🎯 ヒット実績", "⚠️ 危険・注意", "⚓ 渡船・集合"], key="pin_icon_in")
         
+        st.markdown("**位置指定 (画像上のパーセンテージ)**")
         col_pos_a, col_pos_b = st.columns(2)
-        set_x = col_pos_a.slider("位置 (横 X %)", 0.0, 100.0, 50.0, 1.0, key="pin_x_slider")
-        set_y = col_pos_b.slider("位置 (縦 Y %)", 0.0, 100.0, 50.0, 1.0, key="pin_y_slider")
+        set_x = col_pos_a.number_input("横位置 X (%)", min_value=0.0, max_value=100.0, value=50.0, step=1.0, key="pin_x_num")
+        set_y = col_pos_b.number_input("縦位置 Y (%)", min_value=0.0, max_value=100.0, value=50.0, step=1.0, key="pin_y_num")
         
-        if st.button("ピンを打刻して保存", key="btn_save_pin") and pin_title:
+        if st.button("📌 この位置にピンを設置", key="btn_save_pin") and pin_title:
             plan_doc_ref.collection("pins").add({
                 "title": pin_title,
                 "memo": pin_memo,
@@ -562,9 +566,30 @@ with tab5:
     
     if current_map_path and os.path.exists(current_map_path):
         st.subheader("📍 ポイントマップ プレビュー")
-        st.image(current_map_path, use_container_width=True)
+        
+        with open(current_map_path, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode()
+        
+        pins_html = ""
+        if show_all_pins:
+            for p in pins_list:
+                if p.get("visible", True):
+                    pins_html += f"""
+                    <div style="position: absolute; left: {p.get('x', 50)}%; top: {p.get('y', 50)}%; transform: translate(-50%, -100%); pointer-events: none; text-align: center;">
+                        <span style="font-size: 26px; filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.6));">{p.get('icon', '📍')}</span><br/>
+                        <span style="background: rgba(0,0,0,0.85); color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; font-weight: bold;">{p.get('title')}</span>
+                    </div>
+                    """
+        
+        map_component_code = f"""
+        <div style="position: relative; width: 100%; border: 2px solid #2a5298; border-radius: 8px; overflow: hidden; background: #111; text-align: center;">
+            <img src="data:image/jpeg;base64,{encoded_string}" style="width: 100%; height: auto; display: block; object-fit: contain;" />
+            {pins_html}
+        </div>
+        """
+        components.html(map_component_code, height=520, scrolling=False)
     else:
-        st.info("上の「画像ファイルを選択」から地図・航空写真をアップロードするとマップが表示されます。")
+        st.info("上のエリアからマップ・航空写真画像をアップロードすると、ここにピン付きマップが表示されます。")
 
     if pins_list:
         st.subheader("📋 ポイント一覧・表示切替・削除")
