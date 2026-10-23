@@ -7,6 +7,7 @@ import os
 import requests
 import streamlit.components.v1 as components
 import base64
+from PIL import Image
 
 # ---------------------------------------------------------
 # ページ設定 & 自動翻訳無効化ヘッダー
@@ -81,6 +82,20 @@ def delete_plan(plan_id):
     db.collection("plans").document(plan_id).delete()
 
 # ---------------------------------------------------------
+# 画像圧縮ヘルパー関数（フリーズ防止用）
+# ---------------------------------------------------------
+def save_optimized_image(uploaded_file, save_path, max_width=1200):
+    os.makedirs("uploads", exist_ok=True)
+    img = Image.open(uploaded_file)
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    if img.width > max_width:
+        ratio = max_width / float(img.width)
+        new_height = int(float(img.height) * ratio)
+        img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+    img.save(save_path, "JPEG", quality=80)
+
+# ---------------------------------------------------------
 # 地名検索（国内高精度対応）
 # ---------------------------------------------------------
 def geocode_location_jp(location_name):
@@ -123,7 +138,6 @@ def get_weather_icon_and_desc(code):
     }
     return mapping.get(code, ("☁️", "曇り"))
 
-# 過去日・未来両対応（3時間おきグラフィカル表示用データ取得）
 @st.cache_data(ttl=3600)
 def fetch_weather_3h_smart(lat, lon, start_date_obj, num_days=1):
     try:
@@ -148,16 +162,14 @@ def fetch_weather_3h_smart(lat, lon, start_date_obj, num_days=1):
             })
             
             df_filtered = df_h[df_h["time"].apply(lambda x: x.split("T")[0] in target_dates)].copy()
-            
-            # 3時間ごとに間引き (00:00, 03:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00)
             df_filtered["hour"] = df_filtered["time"].apply(lambda x: int(x.split("T")[1].split(":")[0]))
             df_3h = df_filtered[df_filtered["hour"] % 3 == 0].copy()
             
             results = []
             for _, row in df_3h.iterrows():
                 icon, desc = get_weather_icon_and_desc(row["code"])
-                date_part = row["time"].split("T")[0][5:] # MM-DD
-                time_part = row["time"].split("T")[1][:5] # HH:MM
+                date_part = row["time"].split("T")[0][5:]
+                time_part = row["time"].split("T")[1][:5]
                 results.append({
                     "date_time": f"{date_part} {time_part}",
                     "icon": icon,
@@ -192,7 +204,6 @@ current_plan = plans_df[plans_df["name"] == selected_plan_name].iloc[0]
 plan_id = current_plan["id"]
 members = current_plan.get("members", [])
 
-# 日付データ取得
 raw_start = current_plan.get("start_date")
 raw_end = current_plan.get("end_date")
 
@@ -446,10 +457,9 @@ with tab4:
             if c_species:
                 img_path = ""
                 if c_img is not None:
-                    os.makedirs("uploads", exist_ok=True)
-                    img_path = os.path.join("uploads", f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{c_img.name}")
-                    with open(img_path, "wb") as f:
-                        f.write(c_img.getbuffer())
+                    saved_path = os.path.join("uploads", f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{c_img.name}")
+                    save_optimized_image(c_img, saved_path)
+                    img_path = saved_path
                 
                 plan_doc_ref.collection("catches").add({
                     "catch_date": str(c_date),
@@ -491,36 +501,45 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (画像領域全体表示 & タップ打刻修復版)
+# ⑤ ポイントマップ (画像最適化・フリーズ防止 & マップ削除機能)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
     
     col_map1, col_map2 = st.columns([1.2, 1])
     
+    map_doc = plan_doc_ref.collection("map_config").document("current").get()
+    current_map_path = map_doc.to_dict().get("image_path") if map_doc.exists else ""
+
     with col_map1:
-        st.subheader("1. 釣場画像・図面の登録")
+        st.subheader("1. 釣場画像・図面の管理")
         map_img_file = st.file_uploader("航空写真やマップ画像をアップロード", type=["jpg", "jpeg", "png"], key="map_img_upload")
         
-        map_doc = plan_doc_ref.collection("map_config").document("current").get()
-        current_map_path = map_doc.to_dict().get("image_path") if map_doc.exists else ""
-        
         if map_img_file is not None:
-            os.makedirs("uploads", exist_ok=True)
-            saved_map_path = os.path.join("uploads", f"map_{plan_id}_{map_img_file.name}")
-            with open(saved_map_path, "wb") as f:
-                f.write(map_img_file.getbuffer())
+            saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
+            save_optimized_image(map_img_file, saved_map_path)
             plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
-            st.success("マップ画像を登録しました！")
+            st.success("マップ画像を最適化して登録しました！")
             st.rerun()
             
+        # マップ画像の削除ボタン機能
+        if current_map_path and os.path.exists(current_map_path):
+            if st.button("🗑️ 現在のマップ画像を削除", key="btn_del_map_img", type="primary"):
+                try:
+                    os.remove(current_map_path)
+                except Exception:
+                    pass
+                plan_doc_ref.collection("map_config").document("current").delete()
+                st.success("マップ画像を削除しました。")
+                st.rerun()
+
     with col_map2:
-        st.subheader("2. ピン情報入力")
-        st.caption("👇 画像上の好きな場所をクリックすると、位置座標（X%, Y%）が自動設定されます。")
+        st.subheader("2. ピン位置の入力")
+        st.caption("👇 下の画像上の設置したい位置の「横 X %」「縦 Y %」を入力またはスライダー指定してください。")
         
         col_pos_a, col_pos_b = st.columns(2)
-        set_x = col_pos_a.number_input("位置 (横 X %)", min_value=0.0, max_value=100.0, value=50.0, step=0.5, key="pin_x_num")
-        set_y = col_pos_b.number_input("位置 (縦 Y %)", min_value=0.0, max_value=100.0, value=50.0, step=0.5, key="pin_y_num")
+        set_x = col_pos_a.slider("位置 (横 X %)", 0.0, 100.0, 50.0, 0.5, key="pin_x_num")
+        set_y = col_pos_b.slider("位置 (縦 Y %)", 0.0, 100.0, 50.0, 0.5, key="pin_y_num")
         
         pin_title = st.text_input("ポイント名", placeholder="例: 1番船着き場 / 手前の根", key="pin_title_in")
         pin_memo = st.text_input("状況・メモ", placeholder="例: 手前5m根掛かり注意 / 水深6m", key="pin_memo_in")
@@ -548,7 +567,7 @@ with tab5:
     show_all_pins = col_ctrl1.toggle("全ピンを一括表示/非表示", value=True, key="toggle_all_pins")
     
     if current_map_path and os.path.exists(current_map_path):
-        st.subheader("📍 タップ対応 インタラクティブ・全画面マップ")
+        st.subheader("📍 ポイントマップ プレビュー")
         
         with open(current_map_path, "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode()
@@ -559,30 +578,20 @@ with tab5:
                 if p.get("visible", True):
                     pins_html += f"""
                     <div style="position: absolute; left: {p.get('x', 50)}%; top: {p.get('y', 50)}%; transform: translate(-50%, -100%); pointer-events: none; text-align: center;">
-                        <span style="font-size: 28px; filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.5));">{p.get('icon', '📍')}</span><br/>
+                        <span style="font-size: 26px; filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.5));">{p.get('icon', '📍')}</span><br/>
                         <span style="background: rgba(0,0,0,0.85); color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; font-weight: bold;">{p.get('title')}</span>
                     </div>
                     """
         
-        # 切れないレスポンシブ配置 & 直感タップ位置計算スクリプト
         map_component_code = f"""
-        <div id="container" style="position: relative; width: 100%; border: 2px solid #2a5298; border-radius: 8px; overflow: hidden; background: #222; text-align: center;">
-            <img id="map-img" src="data:image/png;base64,{encoded_string}" style="width: 100%; height: auto; display: block; object-fit: contain; cursor: crosshair;" />
+        <div id="container" style="position: relative; width: 100%; border: 2px solid #2a5298; border-radius: 8px; overflow: hidden; background: #111; text-align: center;">
+            <img id="map-img" src="data:image/jpeg;base64,{encoded_string}" style="width: 100%; height: auto; display: block; object-fit: contain;" />
             {pins_html}
         </div>
-        <script>
-            const container = document.getElementById('container');
-            container.addEventListener('click', function(e) {{
-                const rect = container.getBoundingClientRect();
-                const x = (((e.clientX - rect.left) / rect.width) * 100).toFixed(1);
-                const y = (((e.clientY - rect.top) / rect.height) * 100).toFixed(1);
-                alert('クリック位置を決定しました！\\nX: ' + x + '% / Y: ' + y + '%\\n\\n上の「位置 (横 X % / 縦 Y %)」に入力してください。');
-            }});
-        </script>
         """
-        components.html(map_component_code, height=550, scrolling=False)
+        components.html(map_component_code, height=520, scrolling=False)
     else:
-        st.info("上のエリアからマップ・航空写真画像をアップロードすると、ここにインタラクティブマップが表示されます。")
+        st.info("上の「画像ファイルを選択」から地図・航空写真（JPEG/PNG）をアップロードすると、ここにマップが表示されます。")
 
     if pins_list:
         st.subheader("📋 ポイント一覧・表示切替・削除")
@@ -665,7 +674,6 @@ with tab6:
         weather_cards = fetch_weather_3h_smart(coords["lat"], coords["lon"], target_date, num_days=n_days)
         
         if weather_cards:
-            # 3時間ごとのカードをグリッド状にグラフィカル配置
             cols = st.columns(4)
             for idx, w in enumerate(weather_cards):
                 with cols[idx % 4]:
@@ -794,8 +802,7 @@ with tab7:
 
     with st.expander("🗺️ 4. インタラクティブポイントマップの使い方", expanded=False):
         st.write("""
-        * 航空写真やマップ画像をアップロード後、画像上をクリックすると位置座標（X%, Y%）を取得・ピン設置できます。
-        * 全ピン一括表示スイッチや個別チェックボックスで表示を制御できます。
+        * 航空写真やマップ画像をアップロード後、スライダーでピン（X%, Y%）をスムーズに位置調整できます。不要になったマップ画像は「🗑️ 現在のマップ画像を削除」ボタンで消去可能です。
         """)
 
     with st.expander("🌤️ 5. ピンポイント天気・風予報の使い方", expanded=False):
