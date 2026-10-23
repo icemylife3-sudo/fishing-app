@@ -113,47 +113,60 @@ def get_wind_direction_16(deg):
     arr = ["北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東", "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西"]
     return arr[(val % 16)]
 
-def get_weather_desc(code):
+def get_weather_icon_and_desc(code):
     mapping = {
-        0: "☀️ 晴天", 1: "🌤️ ほぼ晴れ", 2: "⛅ 時々曇り", 3: "☁️ 曇り",
-        45: "🌫️ 霧", 48: "🌫️ 着氷性の霧",
-        51: "🌧️ 小雨", 53: "🌧️ 雨", 55: "🌧️ 強い雨",
-        61: "☔ 雨", 63: "☔ やや強い雨", 65: "☔ 激しい雨",
-        80: "🌦️ にわか雨", 81: "🌦️ 強いにわか雨", 82: "⛈️ 激しいにわか雨"
+        0: ("☀️", "晴天"), 1: ("🌤️", "ほぼ晴れ"), 2: ("⛅", "時々曇り"), 3: ("☁️", "曇り"),
+        45: ("🌫️", "霧"), 48: ("🌫️", "着氷性の霧"),
+        51: ("🌧️", "小雨"), 53: ("🌧️", "雨"), 55: ("🌧️", "強い雨"),
+        61: ("☔", "雨"), 63: ("☔", "やや強い雨"), 65: ("☔", "激しい雨"),
+        80: ("🌦️", "にわか雨"), 81: ("🌦️", "強いにわか雨"), 82: ("⛈️", "激しいにわか雨")
     }
-    return mapping.get(code, "☁️ 天気")
+    return mapping.get(code, ("☁️", "曇り"))
 
-# 過去日・未来両対応の気象データ取得関数
+# 過去日・未来両対応（3時間おきグラフィカル表示用データ取得）
 @st.cache_data(ttl=3600)
-def fetch_weather_for_dates_smart(lat, lon, start_date_obj, num_days=1):
+def fetch_weather_3h_smart(lat, lon, start_date_obj, num_days=1):
     try:
         today_obj = date.today()
         target_dates = [(start_date_obj + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(num_days)]
         
-        # 未来（または本日を含む）の予報
         if start_date_obj >= today_obj - timedelta(days=2):
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=weathercode,windspeed_10m,winddirection_10m&forecast_days=14&timezone=Asia%2FTokyo"
-        else: # 過去データ (Archive API)
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,weathercode,windspeed_10m,winddirection_10m&forecast_days=14&timezone=Asia%2FTokyo"
+        else:
             end_d_str = (start_date_obj + timedelta(days=num_days)).strftime("%Y-%m-%d")
-            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={target_dates[0]}&end_date={end_d_str}&hourly=weathercode,windspeed_10m,winddirection_10m&timezone=Asia%2FTokyo"
+            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={target_dates[0]}&end_date={end_d_str}&hourly=temperature_2m,weathercode,windspeed_10m,winddirection_10m&timezone=Asia%2FTokyo"
             
         res = requests.get(url).json()
         
         if "hourly" in res:
             df_h = pd.DataFrame({
                 "time": res["hourly"]["time"],
+                "temp": res["hourly"]["temperature_2m"],
                 "code": res["hourly"]["weathercode"],
                 "speed": res["hourly"]["windspeed_10m"],
                 "deg": res["hourly"]["winddirection_10m"]
             })
             
             df_filtered = df_h[df_h["time"].apply(lambda x: x.split("T")[0] in target_dates)].copy()
-            if not df_filtered.empty:
-                df_filtered["日付・時間"] = df_filtered["time"].apply(lambda x: f"{x.split('T')[0][5:]} {x.split('T')[1][:5]}")
-                df_filtered["天気"] = df_filtered["code"].apply(get_weather_desc)
-                df_filtered["風速"] = df_filtered["speed"].apply(lambda x: f"{x:.1f} m/s")
-                df_filtered["風向き"] = df_filtered["deg"].apply(get_wind_direction_16)
-                return df_filtered[["日付・時間", "天気", "風速", "風向き"]]
+            
+            # 3時間ごとに間引き (00:00, 03:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00)
+            df_filtered["hour"] = df_filtered["time"].apply(lambda x: int(x.split("T")[1].split(":")[0]))
+            df_3h = df_filtered[df_filtered["hour"] % 3 == 0].copy()
+            
+            results = []
+            for _, row in df_3h.iterrows():
+                icon, desc = get_weather_icon_and_desc(row["code"])
+                date_part = row["time"].split("T")[0][5:] # MM-DD
+                time_part = row["time"].split("T")[1][:5] # HH:MM
+                results.append({
+                    "date_time": f"{date_part} {time_part}",
+                    "icon": icon,
+                    "desc": desc,
+                    "temp": f"{row['temp']:.1f}℃",
+                    "speed": f"{row['speed']:.1f} m/s",
+                    "dir": get_wind_direction_16(row["deg"])
+                })
+            return results
     except Exception:
         pass
     return None
@@ -179,7 +192,7 @@ current_plan = plans_df[plans_df["name"] == selected_plan_name].iloc[0]
 plan_id = current_plan["id"]
 members = current_plan.get("members", [])
 
-# 日付データの取得
+# 日付データ取得
 raw_start = current_plan.get("start_date")
 raw_end = current_plan.get("end_date")
 
@@ -478,25 +491,11 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (タップ/クリックで直接ピン配置機能)
+# ⑤ ポイントマップ (画像領域全体表示 & タップ打刻修復版)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
     
-    # セッション状態から直前クリック位置（X%, Y%）を取得
-    if "clicked_pos" not in st.session_state:
-        st.session_state.clicked_pos = None
-
-    # クエリパラメータ経由でのタップ位置検知
-    query_params = st.query_params
-    if "tap_x" in query_params and "tap_y" in query_params:
-        try:
-            cx = round(float(query_params["tap_x"]), 1)
-            cy = round(float(query_params["tap_y"]), 1)
-            st.session_state.clicked_pos = (cx, cy)
-        except:
-            pass
-
     col_map1, col_map2 = st.columns([1.2, 1])
     
     with col_map1:
@@ -516,31 +515,27 @@ with tab5:
             st.rerun()
             
     with col_map2:
-        st.subheader("2. タップ位置へのピン設置")
-        if st.session_state.clicked_pos:
-            st.info(f"🎯 指定された座標: X = {st.session_state.clicked_pos[0]}%, Y = {st.session_state.clicked_pos[1]}%")
-        else:
-            st.caption("👈 下の画像を直接タップ/クリックすると位置が固定されます。")
-            
+        st.subheader("2. ピン情報入力")
+        st.caption("👇 画像上の好きな場所をクリックすると、位置座標（X%, Y%）が自動設定されます。")
+        
+        col_pos_a, col_pos_b = st.columns(2)
+        set_x = col_pos_a.number_input("位置 (横 X %)", min_value=0.0, max_value=100.0, value=50.0, step=0.5, key="pin_x_num")
+        set_y = col_pos_b.number_input("位置 (縦 Y %)", min_value=0.0, max_value=100.0, value=50.0, step=0.5, key="pin_y_num")
+        
         pin_title = st.text_input("ポイント名", placeholder="例: 1番船着き場 / 手前の根", key="pin_title_in")
         pin_memo = st.text_input("状況・メモ", placeholder="例: 手前5m根掛かり注意 / 水深6m", key="pin_memo_in")
         pin_icon = st.selectbox("アイコンタイプ", ["📍 ポイント", "🎯 ヒット実績", "⚠️ 危険・注意", "⚓ 渡船・集合"], key="pin_icon_in")
         
-        if st.button("この場所にピンを打刻", key="btn_add_pin_click") and pin_title:
-            pos_x = st.session_state.clicked_pos[0] if st.session_state.clicked_pos else 50.0
-            pos_y = st.session_state.clicked_pos[1] if st.session_state.clicked_pos else 50.0
-            
+        if st.button("ピンを打刻して保存", key="btn_save_pin") and pin_title:
             plan_doc_ref.collection("pins").add({
                 "title": pin_title,
                 "memo": pin_memo,
                 "icon": pin_icon.split()[0],
-                "x": pos_x,
-                "y": pos_y,
+                "x": float(set_x),
+                "y": float(set_y),
                 "visible": True,
                 "created_at": datetime.now()
             })
-            st.session_state.clicked_pos = None
-            st.query_params.clear()
             st.success(f"「{pin_title}」にピンを設置しました！")
             st.rerun()
 
@@ -553,7 +548,7 @@ with tab5:
     show_all_pins = col_ctrl1.toggle("全ピンを一括表示/非表示", value=True, key="toggle_all_pins")
     
     if current_map_path and os.path.exists(current_map_path):
-        st.subheader("📍 タップでピン打ちできるインタラクティブマップ")
+        st.subheader("📍 タップ対応 インタラクティブ・全画面マップ")
         
         with open(current_map_path, "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode()
@@ -563,32 +558,29 @@ with tab5:
             for p in pins_list:
                 if p.get("visible", True):
                     pins_html += f"""
-                    <div style="position: absolute; left: {p.get('x', 50)}%; top: {p.get('y', 50)}%; transform: translate(-50%, -50%); pointer-events: none;">
-                        <span style="font-size: 26px;">{p.get('icon', '📍')}</span>
-                        <span style="background: rgba(0,0,0,0.8); color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; white-space: nowrap;">{p.get('title')}</span>
+                    <div style="position: absolute; left: {p.get('x', 50)}%; top: {p.get('y', 50)}%; transform: translate(-50%, -100%); pointer-events: none; text-align: center;">
+                        <span style="font-size: 28px; filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.5));">{p.get('icon', '📍')}</span><br/>
+                        <span style="background: rgba(0,0,0,0.85); color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; font-weight: bold;">{p.get('title')}</span>
                     </div>
                     """
         
-        # タップ位置をミリ秒単位で検知・描画するカスタムJavaScript構成
-        interactive_map_html = f"""
-        <div id="map-wrap" style="position: relative; width: 100%; max-width: 900px; margin: 0 auto; cursor: crosshair; border: 2px solid #2b5c8f; border-radius: 8px; overflow: hidden;">
-            <img id="map-img" src="data:image/png;base64,{encoded_string}" style="width: 100%; display: block;" />
+        # 切れないレスポンシブ配置 & 直感タップ位置計算スクリプト
+        map_component_code = f"""
+        <div id="container" style="position: relative; width: 100%; border: 2px solid #2a5298; border-radius: 8px; overflow: hidden; background: #222; text-align: center;">
+            <img id="map-img" src="data:image/png;base64,{encoded_string}" style="width: 100%; height: auto; display: block; object-fit: contain; cursor: crosshair;" />
             {pins_html}
         </div>
         <script>
-            const mapWrap = document.getElementById('map-wrap');
-            mapWrap.addEventListener('click', function(e) {{
-                const rect = mapWrap.getBoundingClientRect();
-                const x = ((e.clientX - rect.left) / rect.width) * 100;
-                const y = ((e.clientY - rect.top) / rect.height) * 100;
-                const url = new URL(window.parent.location.href);
-                url.searchParams.set('tap_x', x.toFixed(1));
-                url.searchParams.set('tap_y', y.toFixed(1));
-                window.parent.location.href = url.href;
+            const container = document.getElementById('container');
+            container.addEventListener('click', function(e) {{
+                const rect = container.getBoundingClientRect();
+                const x = (((e.clientX - rect.left) / rect.width) * 100).toFixed(1);
+                const y = (((e.clientY - rect.top) / rect.height) * 100).toFixed(1);
+                alert('クリック位置を決定しました！\\nX: ' + x + '% / Y: ' + y + '%\\n\\n上の「位置 (横 X % / 縦 Y %)」に入力してください。');
             }});
         </script>
         """
-        components.html(interactive_map_html, height=520, scrolling=False)
+        components.html(map_component_code, height=550, scrolling=False)
     else:
         st.info("上のエリアからマップ・航空写真画像をアップロードすると、ここにインタラクティブマップが表示されます。")
 
@@ -613,10 +605,10 @@ with tab5:
                 st.rerun()
 
 # =========================================================
-# ⑥ 天気・風予報（過去データ＆行程自動保持対応）
+# ⑥ 天気・風予報（3時間おきグラフィカル表示）
 # =========================================================
 with tab6:
-    st.header("🌤️ 釣場ポイントのピンポイント天気・風予報")
+    st.header("🌤️ 釣場ポイントのピンポイント気象・風予報")
     
     itin_docs = plan_doc_ref.collection("itinerary").order_by("date_time").stream()
     itin_list = [d.to_dict() for d in itin_docs]
@@ -668,12 +660,25 @@ with tab6:
         coords = st.session_state.target_coords
         n_days = st.session_state.num_forecast_days
         
-        st.subheader(f"📍 {coords['name']} の気象実績・予報 (対象: {target_date} から {n_days} 日間)")
+        st.subheader(f"📍 {coords['name']} の気象予報・実績 (3時間ごと / {target_date} から {n_days} 日間)")
         
-        df_weather = fetch_weather_for_dates_smart(coords["lat"], coords["lon"], target_date, num_days=n_days)
+        weather_cards = fetch_weather_3h_smart(coords["lat"], coords["lon"], target_date, num_days=n_days)
         
-        if df_weather is not None and not df_weather.empty:
-            st.dataframe(df_weather, use_container_width=True, hide_index=True)
+        if weather_cards:
+            # 3時間ごとのカードをグリッド状にグラフィカル配置
+            cols = st.columns(4)
+            for idx, w in enumerate(weather_cards):
+                with cols[idx % 4]:
+                    st.markdown(f"""
+                    <div style="background: #f0f4f8; border-radius: 10px; padding: 12px; margin-bottom: 12px; border-left: 4px solid #2a5298; text-align: center;">
+                        <span style="font-size: 12px; color: #666; font-weight: bold;">{w['date_time']}</span>
+                        <div style="font-size: 36px; margin: 4px 0;">{w['icon']}</div>
+                        <div style="font-size: 13px; font-weight: bold; color: #333;">{w['desc']}</div>
+                        <hr style="margin: 8px 0; border: none; border-top: 1px solid #ddd;"/>
+                        <div style="font-size: 14px; color: #d35400;">🌡️ <b>{w['temp']}</b></div>
+                        <div style="font-size: 13px; color: #2980b9;">🚩 風: <b>{w['dir']} ({w['speed']})</b></div>
+                    </div>
+                    """, unsafe_allow_html=True)
         else:
             st.warning("指定された日付の気象データを取得できませんでした。")
     else:
@@ -700,7 +705,6 @@ with tab7:
             st.session_state.show_report_card = False
             st.rerun()
 
-        # データ全読み込み
         exp_docs = plan_doc_ref.collection("expenses").stream()
         exp_list = [d.to_dict() for d in exp_docs]
         total_exp = sum([int(e.get("amount", 0)) for e in exp_list])
@@ -717,16 +721,13 @@ with tab7:
             sorted_catches = sorted(catches_list, key=lambda x: float(x.get("size", 0)), reverse=True)
             big_fish_title = f"{sorted_catches[0].get('species', '-')} ({sorted_catches[0].get('size', 0)}cm)"
 
-        # 高画質デザインカードHTML構成
         report_html = f"""
         <div style="background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); border-radius: 16px; padding: 30px; font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 850px; margin: 0 auto; box-shadow: 0 10px 20px rgba(0,0,0,0.15); color: #333;">
-            <!-- ヘッダー -->
             <div style="background: #1e3c72; background: linear-gradient(to right, #2a5298, #1e3c72); color: white; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 25px;">
                 <h1 style="margin: 0; font-size: 28px; letter-spacing: 1px;">🎣 {selected_plan_name} 遠征レポート</h1>
                 <p style="margin: 8px 0 0 0; opacity: 0.9; font-size: 14px;">🗓️ {s_date} 〜 {e_date} | 👥 参加メンバー: {', '.join(members)}</p>
             </div>
             
-            <!-- サマリーカード2列 -->
             <div style="display: flex; gap: 15px; margin-bottom: 25px;">
                 <div style="flex: 1; background: white; padding: 18px; border-radius: 12px; text-align: center; border-top: 4px solid #2a5298; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
                     <span style="font-size: 13px; color: #666; font-weight: bold;">💰 総支出 / 1人あたり精算</span>
@@ -738,7 +739,6 @@ with tab7:
                 </div>
             </div>
             
-            <!-- 行程タイムライン -->
             <div style="background: white; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
                 <h3 style="margin-top: 0; color: #1e3c72; border-bottom: 2px solid #eee; padding-bottom: 8px;">🗓️ 旅の行程ハイライト</h3>
                 <ul style="padding-left: 20px; margin-bottom: 0; line-height: 1.8;">
@@ -752,7 +752,6 @@ with tab7:
                 </ul>
             </div>
 
-            <!-- 釣果ギャラリー -->
             <div style="background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
                 <h3 style="margin-top: 0; color: #1e3c72; border-bottom: 2px solid #eee; padding-bottom: 8px;">🐟 釣果アーカイブ ({len(catches_list)}件)</h3>
                 <ul style="padding-left: 20px; margin-bottom: 0; line-height: 1.8;">
@@ -795,11 +794,11 @@ with tab7:
 
     with st.expander("🗺️ 4. インタラクティブポイントマップの使い方", expanded=False):
         st.write("""
-        * 航空写真やマップ画像をアップロード後、**画像を直接タップ/クリック**した位置にピンを打刻できます。
+        * 航空写真やマップ画像をアップロード後、画像上をクリックすると位置座標（X%, Y%）を取得・ピン設置できます。
         * 全ピン一括表示スイッチや個別チェックボックスで表示を制御できます。
         """)
 
-    with st.expander("🌤️ 5. ピンポイント天気・風予報（過去対応）の使い方", expanded=False):
+    with st.expander("🌤️ 5. ピンポイント天気・風予報の使い方", expanded=False):
         st.write("""
-        * 行程表の場所・日付が自動保持されます。**過去の日付**を選んだ場合もその当時の気象実績を読み込みます。
+        * 行程表の場所・日付が自動保持されます。3時間おきの大きな天気アイコン・気温・風速・風向きがカード形式で表示されます。
         """)
