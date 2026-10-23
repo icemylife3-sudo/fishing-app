@@ -5,7 +5,7 @@ from firebase_admin import credentials, firestore
 from datetime import date, datetime, timedelta
 import os
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from streamlit_drawable_canvas import st_canvas
 
 # ---------------------------------------------------------
@@ -500,7 +500,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (確定保存方式・ピン編集＆名前直接描写対応)
+# ⑤ ポイントマップ (安全保存・名前直接文字描画＆編集機能対応)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -514,7 +514,6 @@ with tab5:
         st.subheader("1. 釣場画像・図面の管理")
         map_img_file = st.file_uploader("航空写真やマップ画像を選択 (JPEG/PNG)", type=["jpg", "jpeg", "png"], key="map_img_file_picker")
         
-        # フリーズ防止：確定ボタンを押した時だけ画像を保存＆リロード
         if map_img_file is not None:
             if st.button("💾 マップ画像を確定・保存", key="btn_confirm_map_img", type="primary"):
                 saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
@@ -550,66 +549,74 @@ with tab5:
     if current_map_path and os.path.exists(current_map_path):
         st.subheader("📍 画像上をタップ/クリックしてピンを打つ")
         
-        # ベース画像上に既存の全ピンと「ポイント名」を文字合成描画
-        base_img = Image.open(current_map_path).convert("RGB")
-        w, h = base_img.size
-        
-        draw_img = base_img.copy()
-        draw = ImageDraw.Draw(draw_img)
-        
-        if show_all_pins:
-            for p in pins_list:
-                if p.get("visible", True):
-                    px = int((p.get("x", 50) / 100.0) * w)
-                    py = int((p.get("y", 50) / 100.0) * h)
-                    r = max(10, int(w * 0.02))
-                    
-                    # 赤丸ピン描画
-                    draw.ellipse((px - r, py - r, px + r, py + r), fill="#e74c3c", outline="#ffffff", width=3)
-                    
-                    # ポイント名をマップ上に直接文字描画
-                    label_text = f" {p.get('title', 'ポイント')} "
-                    draw.rectangle([px + r + 2, py - r - 2, px + r + (len(label_text) * 12), py + r + 2], fill="rgba(0,0,0,0.7)")
-                    draw.text((px + r + 4, py - r), label_text, fill="#ffffff")
+        try:
+            base_img = Image.open(current_map_path).convert("RGB")
+            w, h = base_img.size
+            
+            draw_img = base_img.copy()
+            draw = ImageDraw.Draw(draw_img)
+            
+            if show_all_pins:
+                for p in pins_list:
+                    if p.get("visible", True):
+                        px = int((p.get("x", 50) / 100.0) * w)
+                        py = int((p.get("y", 50) / 100.0) * h)
+                        r = max(10, int(w * 0.02))
+                        
+                        # 赤丸描画
+                        draw.ellipse((px - r, py - r, px + r, py + r), fill="#e74c3c", outline="#ffffff", width=3)
+                        
+                        # テキスト（ポイント名）描画
+                        label_text = f" {p.get('title', 'ポイント')} "
+                        draw.rectangle([px + r + 2, py - r - 2, px + r + (len(label_text) * 12), py + r + 2], fill="black")
+                        draw.text((px + r + 4, py - r), label_text, fill="#ffffff")
 
-        # インタラクティブ・キャンバス描画
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.3)",
-            stroke_width=2,
-            stroke_color="#e74c3c",
-            background_image=draw_img,
-            update_streamlit=True,
-            height=int(h * (700 / float(w))) if w > 0 else 500,
-            width=700,
-            drawing_mode="point",
-            point_display_radius=8,
-            key="interactive_map_canvas",
-        )
+            # 一時画像としてディスクへ書き出してキャンバスに渡す（エラー回避のため必須）
+            rendered_temp_path = os.path.join("uploads", f"temp_rendered_{plan_id}.jpg")
+            draw_img.save(rendered_temp_path, "JPEG", quality=80)
 
-        # クリック/タップ時にFirestoreへ座標を追加
-        if canvas_result.json_data is not None:
-            objects = canvas_result.json_data.get("objects", [])
-            if len(objects) > 0:
-                last_obj = objects[-1]
-                click_x = last_obj.get("left", 0)
-                click_y = last_obj.get("top", 0)
-                
-                calc_x = round((click_x / 700.0) * 100, 1)
-                calc_y = round((click_y / (h * (700 / float(w)))) * 100, 1) if w > 0 else 50.0
-                
-                target_title = pin_title if pin_title else f"ポイント({calc_x}%, {calc_y}%)"
-                
-                plan_doc_ref.collection("pins").add({
-                    "title": target_title,
-                    "memo": pin_memo,
-                    "icon": pin_icon.split()[0],
-                    "x": float(calc_x),
-                    "y": float(calc_y),
-                    "visible": True,
-                    "created_at": datetime.now()
-                })
-                st.success(f"「{target_title}」の位置にピンを設置しました！")
-                st.rerun()
+            canvas_height = int(h * (700 / float(w))) if w > 0 else 500
+
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 165, 0, 0.3)",
+                stroke_width=2,
+                stroke_color="#e74c3c",
+                background_image=Image.open(rendered_temp_path),
+                update_streamlit=True,
+                height=canvas_height,
+                width=700,
+                drawing_mode="point",
+                point_display_radius=8,
+                key="interactive_map_canvas",
+            )
+
+            # タップ時の座標追加ロジック
+            if canvas_result is not None and canvas_result.json_data is not None:
+                objects = canvas_result.json_data.get("objects", [])
+                if len(objects) > 0:
+                    last_obj = objects[-1]
+                    click_x = last_obj.get("left", 0)
+                    click_y = last_obj.get("top", 0)
+                    
+                    calc_x = round((click_x / 700.0) * 100, 1) if 700.0 > 0 else 50.0
+                    calc_y = round((click_y / float(canvas_height)) * 100, 1) if canvas_height > 0 else 50.0
+                    
+                    target_title = pin_title if pin_title else f"ポイント({calc_x}%, {calc_y}%)"
+                    
+                    plan_doc_ref.collection("pins").add({
+                        "title": target_title,
+                        "memo": pin_memo,
+                        "icon": pin_icon.split()[0],
+                        "x": float(calc_x),
+                        "y": float(calc_y),
+                        "visible": True,
+                        "created_at": datetime.now()
+                    })
+                    st.success(f"「{target_title}」の位置にピンを設置しました！")
+                    st.rerun()
+
+        except Exception as e:
+            st.error(f"マップ描画中にエラーが発生しました: {e}")
 
     else:
         st.info("上のエリアからマップ・航空写真画像を選択し、「💾 マップ画像を確定・保存」を押すとマップが表示されます。")
@@ -621,7 +628,7 @@ with tab5:
             p_id = pin["id"]
             
             with st.expander(f"{pin.get('icon', '📍')} **{pin.get('title', '')}** (X:{pin.get('x')}% / Y:{pin.get('y')}%)"):
-                cols = st.columns([0.1, 0.4, 0.3, 0.1, 0.1])
+                cols = st.columns([0.1, 0.3, 0.3, 0.15, 0.15])
                 
                 cur_vis = pin.get("visible", True)
                 new_vis = cols[0].checkbox("表示", value=cur_vis, key=f"pin_vis_{p_id}")
@@ -631,7 +638,6 @@ with tab5:
                     
                 cols[1].write(f"**メモ:** {pin.get('memo', '-')}")
                 
-                # インライン編集フォーム
                 edit_name = cols[2].text_input("名前編集", value=pin.get("title", ""), key=f"edit_name_{p_id}")
                 
                 if cols[3].button("💾 保存", key=f"save_pin_{p_id}"):
