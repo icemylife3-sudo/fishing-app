@@ -5,9 +5,7 @@ from firebase_admin import credentials, firestore
 from datetime import date, datetime, timedelta
 import os
 import requests
-import streamlit.components.v1 as components
-import base64
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # ---------------------------------------------------------
 # ページ設定 & 自動翻訳無効化ヘッダー
@@ -82,7 +80,7 @@ def delete_plan(plan_id):
     db.collection("plans").document(plan_id).delete()
 
 # ---------------------------------------------------------
-# 画像軽量化保存（フリーズの根本防止）
+# 画像軽量化保存（フリーズ根本防止）
 # ---------------------------------------------------------
 def save_optimized_image(uploaded_file, save_path, max_width=1000):
     os.makedirs("uploads", exist_ok=True)
@@ -501,7 +499,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (フリーズ完全防止・即時リセット対応)
+# ⑤ ポイントマップ (ネイティブ高速表示・フリーズ完全防止)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -515,12 +513,11 @@ with tab5:
         st.subheader("1. 釣場画像・図面の管理")
         map_img_file = st.file_uploader("航空写真やマップ画像をアップロード (JPEG/PNG)", type=["jpg", "jpeg", "png"], key="map_img_uploader")
         
-        # ファイル選択時に即時保存し、uploader枠をクリア（これでフリーズを完全防止）
         if map_img_file is not None:
             saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
             save_optimized_image(map_img_file, saved_map_path)
             plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
-            st.success("マップ画像を最適化して登録しました！")
+            st.success("マップ画像を登録しました！")
             st.rerun()
             
         if current_map_path and os.path.exists(current_map_path):
@@ -567,27 +564,27 @@ with tab5:
     if current_map_path and os.path.exists(current_map_path):
         st.subheader("📍 ポイントマップ プレビュー")
         
-        with open(current_map_path, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode()
+        # PILで軽量かつ確実にピンを画像上に高速描画
+        base_img = Image.open(current_map_path).convert("RGB")
+        draw = ImageDraw.Draw(base_img)
+        w, h = base_img.size
         
-        pins_html = ""
         if show_all_pins:
             for p in pins_list:
                 if p.get("visible", True):
-                    pins_html += f"""
-                    <div style="position: absolute; left: {p.get('x', 50)}%; top: {p.get('y', 50)}%; transform: translate(-50%, -100%); pointer-events: none; text-align: center;">
-                        <span style="font-size: 26px; filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.6));">{p.get('icon', '📍')}</span><br/>
-                        <span style="background: rgba(0,0,0,0.85); color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; font-weight: bold;">{p.get('title')}</span>
-                    </div>
-                    """
-        
-        map_component_code = f"""
-        <div style="position: relative; width: 100%; border: 2px solid #2a5298; border-radius: 8px; overflow: hidden; background: #111; text-align: center;">
-            <img src="data:image/jpeg;base64,{encoded_string}" style="width: 100%; height: auto; display: block; object-fit: contain;" />
-            {pins_html}
-        </div>
-        """
-        components.html(map_component_code, height=520, scrolling=False)
+                    px = int((p.get("x", 50) / 100.0) * w)
+                    py = int((p.get("y", 50) / 100.0) * h)
+                    
+                    # 赤ピンマーカーを描画
+                    r = max(8, int(w * 0.015))
+                    draw.ellipse((px - r, py - r, px + r, py + r), fill="#e74c3c", outline="#ffffff", width=3)
+                    
+                    # ラベル文字列を描画
+                    label = f" {p.get('title')} "
+                    draw.text((px + r + 4, py - r), label, fill="#ffffff")
+
+        # Streamlitネイティブで表示（フリーズ一切なし）
+        st.image(base_img, use_container_width=True)
     else:
         st.info("上のエリアからマップ・航空写真画像をアップロードすると、ここにピン付きマップが表示されます。")
 
