@@ -484,7 +484,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (【最終形態】スマホ完全対応 ＆ ズレ補正版)
+# ⑤ ポイントマップ
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -745,7 +745,6 @@ with tab7:
             st.session_state.show_report_card = False
             st.rerun()
 
-        # レポート用データの集計
         exp_docs = plan_doc_ref.collection("expenses").stream()
         exp_list = [d.to_dict() for d in exp_docs]
         total_exp = sum([int(e.get("amount", 0)) for e in exp_list])
@@ -762,13 +761,8 @@ with tab7:
             sorted_catches = sorted(catches_list, key=lambda x: float(x.get("size", 0)), reverse=True)
             big_fish_title = f"{sorted_catches[0].get('species', '-')} ({sorted_catches[0].get('size', 0)}cm)"
 
-        # -------------------------------------------------------------
-        # HTML/CSSで構築するグラフィカルな「しおり（レポート）」デザイン
-        # -------------------------------------------------------------
         html_report = f"""
         <div style="font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 800px; margin: 20px auto; background: #ffffff; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); overflow: hidden; border: 1px solid #eaeaea;">
-            
-            <!-- ヘッダー部分 (グラデーション) -->
             <div style="background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white; padding: 40px 20px; text-align: center;">
                 <h1 style="margin: 0; font-size: 32px; letter-spacing: 2px; text-shadow: 2px 2px 4px rgba(0,0,0,0.4);">🎣 {selected_plan_name}</h1>
                 <p style="margin: 15px 0 0 0; font-size: 18px; font-weight: 500; opacity: 0.95;">🗓️ {s_date} 〜 {e_date}</p>
@@ -776,8 +770,6 @@ with tab7:
                     👥 参加メンバー: {', '.join(members)}
                 </div>
             </div>
-
-            <!-- サマリー（費用・実績） -->
             <div style="display: flex; justify-content: space-around; background: #f8f9fa; padding: 20px 10px; border-bottom: 1px solid #eeeeee;">
                 <div style="text-align: center; flex: 1;">
                     <div style="font-size: 13px; color: #7f8c8d; margin-bottom: 5px;">💰 チーム総費用</div>
@@ -792,9 +784,7 @@ with tab7:
                     <div style="font-size: 18px; font-weight: bold; color: #f39c12; margin-top: 4px;">{big_fish_title}</div>
                 </div>
             </div>
-
             <div style="padding: 30px;">
-                <!-- タイムライン（行程表） -->
                 <h3 style="color: #2c3e50; font-size: 20px; border-bottom: 2px solid #3498db; padding-bottom: 8px; margin-bottom: 25px;">🗓️ 行程タイムライン</h3>
                 <div style="margin-left: 15px; border-left: 3px solid #3498db; padding-left: 25px;">
         """
@@ -812,8 +802,6 @@ with tab7:
 
         html_report += """
                 </div>
-
-                <!-- 釣果ハイライト -->
                 <h3 style="color: #2c3e50; font-size: 20px; border-bottom: 2px solid #2ecc71; padding-bottom: 8px; margin-top: 40px; margin-bottom: 25px;">🐟 釣果ハイライト</h3>
                 <div style="display: flex; flex-wrap: wrap; gap: 15px;">
         """
@@ -824,7 +812,6 @@ with tab7:
             if img_path and os.path.exists(img_path):
                 with open(img_path, "rb") as img_file:
                     encoded = base64.b64encode(img_file.read()).decode()
-                    # 画像がある場合はカード上部に大きく配置
                     img_html = f'<img src="data:image/jpeg;base64,{encoded}" style="width: 100%; height: 150px; object-fit: cover; border-radius: 8px; margin-bottom: 10px;">'
             
             html_report += f"""
@@ -849,8 +836,9 @@ with tab7:
         </div>
         """
 
-        # HTMLを画面に描画
-        st.markdown(html_report, unsafe_allow_html=True)
+        # ★ 修正ポイント: 全ての行の左側の空白（インデント）を強制的に削除し、コードブロック化を防止
+        clean_html = "\n".join([line.lstrip() for line in html_report.split("\n")])
+        st.markdown(clean_html, unsafe_allow_html=True)
 
     st.divider()
 
