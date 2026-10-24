@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 import os
 import requests
 import urllib.request
+import base64
 from PIL import Image, ImageDraw, ImageFont
 from streamlit_image_coordinates import streamlit_image_coordinates
 
@@ -290,7 +291,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🐟 釣果記録（写真付）",
     "🗺️ ポイントマップ",
     "🌤️ 天気・風予報",
-    "📖 簡易説明書 & 📄 しおり"
+    "📖 操作マニュアル & しおり"
 ])
 
 plan_doc_ref = db.collection("plans").document(plan_id)
@@ -533,13 +534,11 @@ with tab5:
         
         font = get_jp_font(15)
         base_img = Image.open(current_map_path).convert("RGB")
-        # 元画像のサイズ
         orig_w, orig_h = base_img.size
 
         draw_img = base_img.copy()
         draw = ImageDraw.Draw(draw_img)
         
-        # 保存済みのピンを描画
         if show_all_pins:
             for p in pins_list:
                 if p.get("visible", True):
@@ -560,7 +559,6 @@ with tab5:
                     draw.rectangle([px + r + 4, py - r - 2, px + r + 4 + text_w + 4, py - r + text_h + 4], fill="#222222")
                     draw.text((px + r + 8, py - r), label_text, fill="#ffffff", font=font)
 
-        # 仮ピンの描画
         if st.session_state[temp_pin_key]:
             tx, ty = st.session_state[temp_pin_key]
             px = int((tx / 100.0) * orig_w)
@@ -580,30 +578,24 @@ with tab5:
             draw.rectangle([px + r + 4, py - r - 2, px + r + 4 + text_w + 4, py - r + text_h + 4], fill="#ff9f43")
             draw.text((px + r + 8, py - r), temp_label, fill="#ffffff", font=font)
 
-        # 合成済み画像を保存
         rendered_temp_path = os.path.join("uploads", f"temp_single_map_{plan_id}.jpg")
         draw_img.save(rendered_temp_path, "JPEG", quality=85)
 
-        # ★ スマホ対応の画像クリック取得モジュールを使用
         canvas_key = f"perfect_map_canvas_{plan_id}_{st.session_state[map_cnt_key]}"
         
         value = streamlit_image_coordinates(
             rendered_temp_path,
             key=canvas_key,
-            use_column_width=True, # ★ スマホの画面幅に合わせて自動リサイズ（はみ出さない）
+            use_column_width=True, 
         )
 
-        # タップを検知したら座標を保存して画面をリフレッシュ
         if value is not None:
             click_x = value.get("x", 0)
             click_y = value.get("y", 0)
-            
-            # ★ 修正ポイント: 画面上に縮小表示された「実際の幅・高さ」を使って割合を計算する
             disp_w = value.get("width", orig_w)
             disp_h = value.get("height", orig_h)
             
             if disp_w > 0 and disp_h > 0:
-                # 取得したピクセル座標をパーセントに変換（縮小比率に依存しない完璧な計算）
                 calc_x = round((click_x / float(disp_w)) * 100, 1)
                 calc_y = round((click_y / float(disp_h)) * 100, 1)
                 
@@ -611,7 +603,6 @@ with tab5:
                 st.session_state[map_cnt_key] += 1
                 st.rerun()
 
-        # 仮ピンが存在する場合のみフォームを表示
         if st.session_state[temp_pin_key]:
             calc_x, calc_y = st.session_state[temp_pin_key]
             
@@ -733,23 +724,28 @@ with tab6:
         st.info("👆 行程表に登録された場所の予報が自動セットされます。別の場所を見る場合は検索欄に入力して「検索＆確定」を押してください。")
 
 # =========================================================
-# ⑦ 簡易説明書 & 📄 デザイン強化版 遠征しおり
+# ⑦ 操作マニュアル & グラフィカル遠征しおり
 # =========================================================
 with tab7:
-    st.header("📖 簡易説明書 & 📄 遠征のしおり発行")
-    st.subheader("📄 遠征のしおり（1枚デザイン・レポート）")
+    st.header("📖 操作マニュアル & 📄 遠征しおり発行")
+    
+    st.subheader("📄 遠征のしおり（グラフィカルレポート）")
+    st.caption("旅の思い出や行程を振り返るための、1枚にまとまった特別なレポートを生成します。")
+    
     if "show_report_card" not in st.session_state:
         st.session_state.show_report_card = False
 
     col_rep1, col_rep2 = st.columns([1, 1])
-    if col_rep1.button("📄 しおり（レポート）を生成・表示", key="btn_gen_report", type="primary"):
+    if col_rep1.button("📄 しおり（レポート）を生成して表示", key="btn_gen_report", type="primary"):
         st.session_state.show_report_card = True
+        st.rerun()
 
     if st.session_state.show_report_card:
-        if col_rep2.button("🙈 しおりを非表示にする（閉じる）", key="btn_hide_report"):
+        if col_rep2.button("🙈 しおりを閉じる", key="btn_hide_report"):
             st.session_state.show_report_card = False
             st.rerun()
 
+        # レポート用データの集計
         exp_docs = plan_doc_ref.collection("expenses").stream()
         exp_list = [d.to_dict() for d in exp_docs]
         total_exp = sum([int(e.get("amount", 0)) for e in exp_list])
@@ -757,6 +753,7 @@ with tab7:
         
         catches_docs = plan_doc_ref.collection("catches").stream()
         catches_list = [d.to_dict() for d in catches_docs]
+        
         itin_docs = plan_doc_ref.collection("itinerary").order_by("date_time").stream()
         itin_list = [d.to_dict() for d in itin_docs]
         
@@ -765,39 +762,159 @@ with tab7:
             sorted_catches = sorted(catches_list, key=lambda x: float(x.get("size", 0)), reverse=True)
             big_fish_title = f"{sorted_catches[0].get('species', '-')} ({sorted_catches[0].get('size', 0)}cm)"
 
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #eef2f3 0%, #8e9eab 100%); border-radius: 12px; padding: 20px; color: #333; margin-bottom: 20px;">
-            <h2 style="color: #1e3c72; margin-top: 0;">🎣 {selected_plan_name} 遠征レポート</h2>
-            <p>🗓️ {s_date} 〜 {e_date} | 👥 メンバー: {', '.join(members)}</p>
-            <hr/>
-            <p>💰 <b>総費用:</b> ¥{total_exp:,} (1人あたり: ¥{per_person:,})</p>
-            <p>🏆 <b>ビッグワン:</b> {big_fish_title}</p>
+        # -------------------------------------------------------------
+        # HTML/CSSで構築するグラフィカルな「しおり（レポート）」デザイン
+        # -------------------------------------------------------------
+        html_report = f"""
+        <div style="font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 800px; margin: 20px auto; background: #ffffff; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); overflow: hidden; border: 1px solid #eaeaea;">
+            
+            <!-- ヘッダー部分 (グラデーション) -->
+            <div style="background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white; padding: 40px 20px; text-align: center;">
+                <h1 style="margin: 0; font-size: 32px; letter-spacing: 2px; text-shadow: 2px 2px 4px rgba(0,0,0,0.4);">🎣 {selected_plan_name}</h1>
+                <p style="margin: 15px 0 0 0; font-size: 18px; font-weight: 500; opacity: 0.95;">🗓️ {s_date} 〜 {e_date}</p>
+                <div style="margin-top: 15px; display: inline-block; background: rgba(255,255,255,0.2); padding: 5px 15px; border-radius: 20px; font-size: 14px;">
+                    👥 参加メンバー: {', '.join(members)}
+                </div>
+            </div>
+
+            <!-- サマリー（費用・実績） -->
+            <div style="display: flex; justify-content: space-around; background: #f8f9fa; padding: 20px 10px; border-bottom: 1px solid #eeeeee;">
+                <div style="text-align: center; flex: 1;">
+                    <div style="font-size: 13px; color: #7f8c8d; margin-bottom: 5px;">💰 チーム総費用</div>
+                    <div style="font-size: 22px; font-weight: bold; color: #2c3e50;">¥{total_exp:,}</div>
+                </div>
+                <div style="text-align: center; flex: 1; border-left: 1px solid #dddddd;">
+                    <div style="font-size: 13px; color: #7f8c8d; margin-bottom: 5px;">👤 1人あたりの負担</div>
+                    <div style="font-size: 22px; font-weight: bold; color: #e74c3c;">¥{per_person:,}</div>
+                </div>
+                <div style="text-align: center; flex: 1; border-left: 1px solid #dddddd;">
+                    <div style="font-size: 13px; color: #7f8c8d; margin-bottom: 5px;">🏆 ビッグワン賞</div>
+                    <div style="font-size: 18px; font-weight: bold; color: #f39c12; margin-top: 4px;">{big_fish_title}</div>
+                </div>
+            </div>
+
+            <div style="padding: 30px;">
+                <!-- タイムライン（行程表） -->
+                <h3 style="color: #2c3e50; font-size: 20px; border-bottom: 2px solid #3498db; padding-bottom: 8px; margin-bottom: 25px;">🗓️ 行程タイムライン</h3>
+                <div style="margin-left: 15px; border-left: 3px solid #3498db; padding-left: 25px;">
+        """
+
+        for itin in itin_list:
+            html_report += f"""
+                    <div style="position: relative; margin-bottom: 25px;">
+                        <div style="position: absolute; left: -35px; top: 2px; width: 16px; height: 16px; background: #ffffff; border: 4px solid #3498db; border-radius: 50%;"></div>
+                        <div style="font-weight: bold; color: #34495e; font-size: 16px;">{itin.get('date_time')} <span style="color: #7f8c8d; font-weight: normal; font-size: 14px;">@ {itin.get('location')}</span></div>
+                        <div style="color: #555555; font-size: 15px; margin-top: 6px; line-height: 1.5;">{itin.get('activity')}</div>
+                    </div>
+            """
+        if not itin_list:
+            html_report += "<p style='color: #999999; font-style: italic;'>※ 予定はまだ登録されていません。</p>"
+
+        html_report += """
+                </div>
+
+                <!-- 釣果ハイライト -->
+                <h3 style="color: #2c3e50; font-size: 20px; border-bottom: 2px solid #2ecc71; padding-bottom: 8px; margin-top: 40px; margin-bottom: 25px;">🐟 釣果ハイライト</h3>
+                <div style="display: flex; flex-wrap: wrap; gap: 15px;">
+        """
+
+        for c in catches_list:
+            img_html = ""
+            img_path = c.get("image_path")
+            if img_path and os.path.exists(img_path):
+                with open(img_path, "rb") as img_file:
+                    encoded = base64.b64encode(img_file.read()).decode()
+                    # 画像がある場合はカード上部に大きく配置
+                    img_html = f'<img src="data:image/jpeg;base64,{encoded}" style="width: 100%; height: 150px; object-fit: cover; border-radius: 8px; margin-bottom: 10px;">'
+            
+            html_report += f"""
+                    <div style="flex: 1 1 calc(50% - 15px); min-width: 250px; background: #ffffff; border: 1px solid #eef2f5; border-radius: 12px; padding: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.04);">
+                        {img_html}
+                        <div style="font-weight: 800; color: #2c3e50; font-size: 18px; margin-bottom: 6px;">
+                            {c.get('species')} <span style="color: #e74c3c; font-size: 16px;">{c.get('size')}cm</span>
+                        </div>
+                        <div style="font-size: 13px; color: #7f8c8d; line-height: 1.6;">
+                            <b>📍 場所:</b> {c.get('location')}<br>
+                            <b>🎣 ルアー/仕掛け:</b> {c.get('lure')}<br>
+                            <b>📝 メモ:</b> {c.get('notes')}
+                        </div>
+                    </div>
+            """
+        if not catches_list:
+            html_report += "<p style='color: #999999; font-style: italic;'>※ 釣果はまだ登録されていません。</p>"
+
+        html_report += """
+                </div>
+            </div>
         </div>
-        """, unsafe_allow_html=True)
+        """
 
-        st.subheader("🗓️ 旅の行程一覧")
-        if itin_list:
-            for itin in itin_list:
-                st.write(f"- **{itin.get('date_time')}** @ {itin.get('location')} : {itin.get('activity')}")
-        else:
-            st.caption("行程未登録")
-
-        st.subheader("🐟 釣果アーカイブ")
-        if catches_list:
-            for c in catches_list:
-                st.write(f"- **{c.get('catch_date')}** : {c.get('species')} ({c.get('size')}cm) @ {c.get('location')}")
-        else:
-            st.caption("釣果未登録")
+        # HTMLを画面に描画
+        st.markdown(html_report, unsafe_allow_html=True)
 
     st.divider()
-    st.subheader("📖 アプリの簡易ガイド")
+
+    # -------------------------------------------------------------
+    # 実践的で具体的な「操作マニュアル」
+    # -------------------------------------------------------------
+    st.subheader("📖 アプリの操作マニュアル")
+    st.write("各機能の具体的な使い方・操作手順について説明します。")
+
     with st.expander("📁 1. 釣行計画の追加・切り替え", expanded=False):
-        st.write("* 左側サイドバーから計画の選択・作成・削除を行えます。")
-    with st.expander("🗓️ 2. 行程表の使い方", expanded=False):
-        st.write("* 集合時間や出港予定などを登録・削除できます。")
-    with st.expander("💰 3. 旅費割り勘計算の使い方", expanded=False):
-        st.write("* 支出を登録すると、1人あたりの精算額が自動計算されます。")
-    with st.expander("🗺️ 4. ポイントマップの使い方", expanded=False):
-        st.write("* 画像を選択して「確定・保存」で登録。画像をタップするとオレンジ色の「仮ピン」が置かれます。フォームから保存することで確定され、過去のタップ跡は一切残りません。")
-    with st.expander("🌤️ 5. ピンポイント天気・風予報の使い方", expanded=False):
-        st.write("* 3時間おきの大きな天気アイコンと気温・風速が確認できます。")
+        st.markdown("""
+        **【新しい遠征計画の作り方】**
+        1. 画面左側のサイドバーにある「➕ 新しい計画を追加」をクリックして開きます。
+        2. 「計画名（例: 神津島遠征）」を入力し、開始日と終了日をカレンダーから選びます。
+        3. 「参加者」の欄に、メンバーの名前を **カンマ（,）区切り** で入力します。（例: 佐藤, 鈴木, 田中）
+        4. 「計画を作成」ボタンを押すと、新しい計画が立ち上がります。
+
+        **【計画の切り替え・日程変更】**
+        - 複数の計画がある場合、一番上の「現在の計画」ドロップダウンからいつでも別の計画に切り替えられます。
+        - 悪天候等で日程が延期になった場合は、すぐ下にある「開始日」「終了日」を変更するだけで即座に自動保存されます。
+        """)
+
+    with st.expander("🗓️ 2. 行程表の作り方", expanded=False):
+        st.markdown("""
+        **【予定の登録手順】**
+        1. 行程表タブを開き、左側の「予定の追加」エリアに情報を入力します。
+        2. 「日付」と「時間」を合わせます。
+        3. 「場所・施設名（例: 〇〇港 集合）」と、必要に応じて「内容・メモ（例: 渡船代集金）」を入力します。
+        4. 「行程に追加」ボタンを押すと、右側の一覧に時系列順に並んで表示されます。
+        
+        💡 **便利機能:** ここで一番最初に登録した「場所・施設名」が、天気予報タブを開いた際の検索地点として自動的にセットされます。
+        """)
+
+    with st.expander("💰 3. 旅費の自動割り勘計算", expanded=False):
+        st.markdown("""
+        **【立て替えたお金の登録手順】**
+        1. 旅費割り勘管理タブを開きます。
+        2. カテゴリを選び、「項目名（例: レンタカー代）」「金額」を入力します。
+        3. 「支払った人」のリストから、そのお金を**実際に立て替えて払ってくれた人**を選びます。
+        4. 「支出を追加」を押します。
+
+        **【精算の見方】**
+        - 右下の「個人別の立替額サマリー」にある **精算(立替-均等負担)** という項目を見てください。
+        - **マイナス（-）になっている人** は、その金額分だけ **プラスになっている人** にお金を支払うことで、全員の負担が完全に平等（割り勘）になります。
+        """)
+
+    with st.expander("🗺️ 4. ポイントマップへのピン打ち", expanded=False):
+        st.markdown("""
+        **【マップ画像の登録】**
+        1. ポイントマップタブを開き、「航空写真やマップ画像を選択」から、スマホ内の写真やスクショをアップロードします。
+        2. 「💾 マップ画像を確定・保存」を押すと、画面に地図が表示されます。
+
+        **【ポイント（ピン）の打ち方】**
+        1. 表示された**地図上の「ピンを打ちたい場所」を指でタップ**（PCならクリック）します。
+        2. タップした場所に **オレンジ色の「新規ピン配置中...」という仮ピン** が現れます。（場所を間違えた場合は、別の場所をタップすれば移動します）
+        3. その状態のまま、画面下の入力フォームに「ポイント名（例: 堤防先端）」や「ヒットルアー」などのメモを入力します。
+        4. 「📌 このピンを確定して保存」を押すと、オレンジ色の仮ピンが **赤い正式なピン** に変わり、地図上に保存されます。
+        """)
+
+    with st.expander("🌤️ 5. ピンポイント天気・風予報", expanded=False):
+        st.markdown("""
+        **【予報の調べ方】**
+        1. 天気・風予報タブを開くと、行程表に登録した最初の場所の天気が自動で検索されています。
+        2. 別の場所（例: 奥多摩湖、八丈島）を調べたい場合は、入力欄に地名を入れて「検索＆確定」を押してください。
+        3. 過去の日付を選べばその日の「実際の天気（実績）」が、未来を選べば「予報」が3時間おきの大きなアイコンで表示されます。
+        4. 「＋ 1日」ボタンを押すと、翌日以降の予報（最大7日間）まで続けて表示させることができます。
+        """)
