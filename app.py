@@ -7,7 +7,6 @@ import os
 import requests
 import urllib.request
 from PIL import Image, ImageDraw, ImageFont
-# ★スマホ対応の画像クリック取得ライブラリに変更
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # ---------------------------------------------------------
@@ -484,7 +483,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (【最終形態】スマホタップ＆レスポンシブ完全対応版)
+# ⑤ ポイントマップ (【最終形態】スマホ完全対応 ＆ ズレ補正版)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -534,7 +533,8 @@ with tab5:
         
         font = get_jp_font(15)
         base_img = Image.open(current_map_path).convert("RGB")
-        w, h = base_img.size
+        # 元画像のサイズ
+        orig_w, orig_h = base_img.size
 
         draw_img = base_img.copy()
         draw = ImageDraw.Draw(draw_img)
@@ -543,9 +543,9 @@ with tab5:
         if show_all_pins:
             for p in pins_list:
                 if p.get("visible", True):
-                    px = int((p.get("x", 50) / 100.0) * w)
-                    py = int((p.get("y", 50) / 100.0) * h)
-                    r = max(8, int(w * 0.015))
+                    px = int((p.get("x", 50) / 100.0) * orig_w)
+                    py = int((p.get("y", 50) / 100.0) * orig_h)
+                    r = max(8, int(orig_w * 0.015))
                     draw.ellipse((px - r, py - r, px + r, py + r), fill="#e74c3c", outline="#ffffff", width=2)
                     
                     label_text = f" {p.get('title', 'ポイント')} "
@@ -563,9 +563,9 @@ with tab5:
         # 仮ピンの描画
         if st.session_state[temp_pin_key]:
             tx, ty = st.session_state[temp_pin_key]
-            px = int((tx / 100.0) * w)
-            py = int((ty / 100.0) * h)
-            r = max(10, int(w * 0.02))
+            px = int((tx / 100.0) * orig_w)
+            py = int((ty / 100.0) * orig_h)
+            r = max(10, int(orig_w * 0.02))
             
             draw.ellipse((px - r, py - r, px + r, py + r), fill="#ff9f43", outline="#ffffff", width=3)
             
@@ -598,13 +598,18 @@ with tab5:
             click_x = value.get("x", 0)
             click_y = value.get("y", 0)
             
-            # 取得したピクセル座標をパーセントに変換
-            calc_x = round((click_x / float(w)) * 100, 1)
-            calc_y = round((click_y / float(h)) * 100, 1)
+            # ★ 修正ポイント: 画面上に縮小表示された「実際の幅・高さ」を使って割合を計算する
+            disp_w = value.get("width", orig_w)
+            disp_h = value.get("height", orig_h)
             
-            st.session_state[temp_pin_key] = (calc_x, calc_y)
-            st.session_state[map_cnt_key] += 1
-            st.rerun()
+            if disp_w > 0 and disp_h > 0:
+                # 取得したピクセル座標をパーセントに変換（縮小比率に依存しない完璧な計算）
+                calc_x = round((click_x / float(disp_w)) * 100, 1)
+                calc_y = round((click_y / float(disp_h)) * 100, 1)
+                
+                st.session_state[temp_pin_key] = (calc_x, calc_y)
+                st.session_state[map_cnt_key] += 1
+                st.rerun()
 
         # 仮ピンが存在する場合のみフォームを表示
         if st.session_state[temp_pin_key]:
