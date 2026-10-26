@@ -6,7 +6,6 @@ from datetime import date, datetime, timedelta
 import os
 import requests
 import urllib.request
-import urllib.parse
 import base64
 from PIL import Image, ImageDraw, ImageFont
 from streamlit_image_coordinates import streamlit_image_coordinates
@@ -138,27 +137,13 @@ def save_optimized_image(uploaded_file, save_path, max_width=800):
     img.save(save_path, "JPEG", quality=75)
 
 # ---------------------------------------------------------
-# 地名検索モジュール (★国土地理院APIを追加・日本国内最強設定)
+# 地名検索＆天気予報モジュール
 # ---------------------------------------------------------
 def geocode_location_jp(location_name):
     if not location_name:
         return None, None, None
-    
-    # 1. 国土地理院API (日本の自然地名やスポットに最も強い)
     try:
-        url_gsi = f"https://msearch.gsi.go.jp/address/search?q={urllib.parse.quote(location_name)}"
-        res_gsi = requests.get(url_gsi).json()
-        if res_gsi and len(res_gsi) > 0:
-            coords = res_gsi[0]["geometry"]["coordinates"]
-            title = res_gsi[0]["properties"]["title"]
-            # 国土地理院は [経度(lon), 緯度(lat)] の順で返してくるので注意
-            return float(coords[1]), float(coords[0]), title
-    except Exception:
-        pass
-        
-    # 2. Nominatim (OSMの予備用)
-    try:
-        url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(location_name)}&countrycodes=jp&limit=1"
+        url = f"https://nominatim.openstreetmap.org/search?format=json&q={location_name}&countrycodes=jp&limit=1"
         headers = {"User-Agent": "FishingApp/1.0"}
         res = requests.get(url, headers=headers).json()
         if res and len(res) > 0:
@@ -168,16 +153,14 @@ def geocode_location_jp(location_name):
     except Exception:
         pass
     
-    # 3. Open-Meteo (世界の都市名の予備用)
     try:
-        url_alt = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(location_name)}&count=1&language=ja&format=json"
+        url_alt = f"https://geocoding-api.open-meteo.com/v1/search?name={location_name}&count=1&language=ja&format=json"
         res_alt = requests.get(url_alt).json()
         if "results" in res_alt and len(res_alt["results"]) > 0:
             target = res_alt["results"][0]
             return target["latitude"], target["longitude"], target.get("name", location_name)
     except Exception:
         pass
-        
     return None, None, None
 
 def get_wind_direction_16(deg):
@@ -195,7 +178,6 @@ def get_weather_icon_and_desc(code):
     }
     return mapping.get(code, ("☁️", "曇り"))
 
-# ★ 雨量(precipitation)の取得を追加
 @st.cache_data(ttl=3600)
 def fetch_weather_3h_smart(lat, lon, start_date_obj, num_days=1):
     try:
@@ -203,10 +185,10 @@ def fetch_weather_3h_smart(lat, lon, start_date_obj, num_days=1):
         target_dates = [(start_date_obj + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(num_days)]
         
         if start_date_obj >= today_obj - timedelta(days=2):
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,weathercode,windspeed_10m,winddirection_10m,precipitation&forecast_days=14&timezone=Asia%2FTokyo"
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,weathercode,windspeed_10m,winddirection_10m&forecast_days=14&timezone=Asia%2FTokyo"
         else:
             end_d_str = (start_date_obj + timedelta(days=num_days)).strftime("%Y-%m-%d")
-            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={target_dates[0]}&end_date={end_d_str}&hourly=temperature_2m,weathercode,windspeed_10m,winddirection_10m,precipitation&timezone=Asia%2FTokyo"
+            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={target_dates[0]}&end_date={end_d_str}&hourly=temperature_2m,weathercode,windspeed_10m,winddirection_10m&timezone=Asia%2FTokyo"
             
         res = requests.get(url).json()
         if "hourly" in res:
@@ -215,8 +197,7 @@ def fetch_weather_3h_smart(lat, lon, start_date_obj, num_days=1):
                 "temp": res["hourly"]["temperature_2m"],
                 "code": res["hourly"]["weathercode"],
                 "speed": res["hourly"]["windspeed_10m"],
-                "deg": res["hourly"]["winddirection_10m"],
-                "precip": res["hourly"].get("precipitation", 0) # 雨量データを追加
+                "deg": res["hourly"]["winddirection_10m"]
             })
             df_filtered = df_h[df_h["time"].apply(lambda x: x.split("T")[0] in target_dates)].copy()
             df_filtered["hour"] = df_filtered["time"].apply(lambda x: int(x.split("T")[1].split(":")[0]))
@@ -233,8 +214,7 @@ def fetch_weather_3h_smart(lat, lon, start_date_obj, num_days=1):
                     "desc": desc,
                     "temp": f"{row['temp']:.1f}℃",
                     "speed": f"{row['speed']:.1f} m/s",
-                    "dir": get_wind_direction_16(row["deg"]),
-                    "precip": f"{row['precip']:.1f}" # 雨量をフォーマット
+                    "dir": get_wind_direction_16(row["deg"])
                 })
             return results
     except Exception:
@@ -328,7 +308,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 plan_doc_ref = db.collection("plans").document(plan_id)
 
 # =========================================================
-# ① 行程表の管理
+# ① 行程表の管理 (場所とメモのメリハリ強化＆削除確認)
 # =========================================================
 with tab1:
     st.header(f"🗓️ {selected_plan_name} ({s_date} 〜 {e_date})")
@@ -355,9 +335,11 @@ with tab1:
         if itin_list:
             for item in itin_list:
                 item_id = item["id"]
+                # 割合を調整し、場所とメモを上下にメリハリをつけて表示
                 cols = st.columns([0.25, 0.6, 0.15])
                 cols[0].write(f"**{item.get('date_time', '')}**")
                 
+                # HTMLで場所（太字・青系）とメモ（グレー・少し小さめ）を綺麗にデザイン
                 loc_html = f"<div style='line-height: 1.4;'><strong style='font-size: 1.1em; color: #2a5298;'>📍 {item.get('location', '-')}</strong>"
                 act_text = item.get("activity", "")
                 if act_text:
@@ -376,7 +358,7 @@ with tab1:
             st.info("登録されている行程はありません。")
 
 # =========================================================
-# ② 旅費管理
+# ② 旅費管理 (メモ表示＆編集機能＆削除確認を追加)
 # =========================================================
 with tab2:
     st.header(f"💰 {selected_plan_name} - 旅費＆割り勘計算")
@@ -415,12 +397,14 @@ with tab2:
             st.subheader("支出明細")
             for exp in exp_list:
                 e_id = exp["id"]
+                # 4カラムにしてスマホでも見やすく、メモも表示
                 cols = st.columns([0.35, 0.3, 0.25, 0.1])
                 cols[0].markdown(f"**{exp.get('category', '')}**<br><span style='font-size:0.9em;'>{exp.get('item', '-')}</span>", unsafe_allow_html=True)
                 cols[1].markdown(f"**¥{exp.get('amount', 0):,}**<br><span style='font-size:0.85em; color:#555;'>👤 {exp.get('payer', '-')}</span>", unsafe_allow_html=True)
                 cols[2].markdown(f"<span style='font-size:0.85em; color:#777;'>📝 {exp.get('memo', '')}</span>", unsafe_allow_html=True)
                 
                 with cols[3]:
+                    # 編集と削除をまとめたポップオーバー（設定ボタン）
                     with st.popover("⚙️"):
                         st.markdown("**✏️ 内容の編集**")
                         cats = ["交通費・渡航費", "船代・遊漁料", "宿泊費", "エサ・仕掛け", "食費・雑費", "その他"]
@@ -453,7 +437,7 @@ with tab2:
             st.dataframe(payer_summary.rename(columns={"payer": "支払者", "amount": "合計立替額"}), use_container_width=True)
 
 # =========================================================
-# ③ 個人別持ち物チェックリスト
+# ③ 個人別持ち物チェックリスト (削除確認ポップオーバー)
 # =========================================================
 with tab3:
     st.header(f"✅ {selected_plan_name} - 個人別持ち物チェック")
@@ -498,7 +482,7 @@ with tab3:
         st.info("該当する持ち物は登録されていません。")
 
 # =========================================================
-# ④ 釣果記録
+# ④ 釣果記録 (削除確認チェックボックス)
 # =========================================================
 with tab4:
     st.header(f"🐟 {selected_plan_name} - 釣果ログ")
@@ -545,6 +529,7 @@ with tab4:
                         st.write(f"**ヒットルアー/仕掛け:** {catch.get('lure', '-')}")
                         st.write(f"**状況・メモ:** {catch.get('notes', '-')}")
                     with c_col3:
+                        # 削除前にチェックを求める
                         del_conf_c = st.checkbox("削除確認", key=f"conf_catch_{c_id}")
                         if st.button("🗑️ 削除", key=f"del_catch_{c_id}", type="primary", disabled=not del_conf_c):
                             plan_doc_ref.collection("catches").document(c_id).delete()
@@ -554,7 +539,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ
+# ⑤ ポイントマップ (マップ＆ピンの削除確認)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -583,6 +568,7 @@ with tab5:
                 st.rerun()
     with col_u2:
         if current_map_path and os.path.exists(current_map_path):
+            # マップ画像削除の確認ポップオーバー
             with st.popover("🗑️ 現在のマップ画像を削除"):
                 st.write("本当に画像を削除しますか？（ピンのデータは残ります）")
                 if st.button("画像削除を実行", key="btn_del_map_img", type="primary"):
@@ -723,6 +709,7 @@ with tab5:
                     st.session_state.toast_msg = "ピン情報を更新しました！"
                     st.rerun()
                 
+                # ピンの削除確認チェックボックス
                 del_conf_p = btn_cols[2].checkbox("削除確認", key=f"conf_pin_{p_id}")
                 if btn_cols[3].button("🗑️ 削除", key=f"del_pin_{p_id}", type="primary", disabled=not del_conf_p):
                     plan_doc_ref.collection("pins").document(p_id).delete()
@@ -730,36 +717,16 @@ with tab5:
                     st.rerun()
 
 # =========================================================
-# ⑥ 天気・風予報（★雨量追加・日付自動保存・スマホ表示修正・国土地理院API強化版）
+# ⑥ 天気・風予報（3時間おきグラフィカル表示）
 # =========================================================
 with tab6:
     st.header("🌤️ 釣場ポイントのピンポイント気象・風予報")
-    
-    # 保存されている検索条件をFirestoreから取得
-    plan_data = plan_doc_ref.get().to_dict() or {}
-    saved_weather_loc = plan_data.get("weather_location", "")
-    saved_lat = plan_data.get("weather_lat")
-    saved_lon = plan_data.get("weather_lon")
-    saved_name = plan_data.get("weather_name")
-    saved_date_str = plan_data.get("weather_date")
-
     itin_docs = plan_doc_ref.collection("itinerary").order_by("date_time").stream()
     itin_list = [d.to_dict() for d in itin_docs]
-    
-    default_loc = saved_weather_loc
+    default_loc = ""
     default_date = s_date_obj
-    
-    # 検索履歴がなければ、行程表の1番目の場所をセット
-    if not default_loc and itin_list:
+    if itin_list:
         default_loc = itin_list[0].get("location", "")
-        
-    # 日付の初期設定: 保存済みがあればそれ、なければ行程表1番目、それもなければ計画の開始日
-    if saved_date_str:
-        try:
-            default_date = datetime.strptime(saved_date_str, "%Y-%m-%d").date()
-        except:
-            pass
-    elif itin_list:
         try:
             default_date = datetime.strptime(itin_list[0].get("date_time", "").split()[0], "%Y-%m-%d").date()
         except:
@@ -772,38 +739,20 @@ with tab6:
     search_query = col_s1.text_input("釣場・スポット名を入力", value=default_loc, placeholder="例: 奥多摩湖、神津島など", key="weather_search_input")
     target_date = col_s2.date_input("日付を選択（過去・未来対応）", value=default_date, key="target_date_select")
     
-    # ★ カレンダーの日付が変更されたら、即座にFirestoreに保存（リロード時の復元用）
-    if str(target_date) != plan_data.get("weather_date"):
-        plan_doc_ref.update({"weather_date": str(target_date)})
-    
-    coord_key = f"weather_coords_{plan_id}"
-    
-    if coord_key not in st.session_state:
-        if saved_lat and saved_lon:
-            st.session_state[coord_key] = {"lat": saved_lat, "lon": saved_lon, "name": saved_name}
-        elif default_loc:
+    if "target_coords" not in st.session_state or st.session_state.target_coords is None:
+        if default_loc:
             lat, lon, found_name = geocode_location_jp(default_loc)
             if lat and lon:
-                st.session_state[coord_key] = {"lat": lat, "lon": lon, "name": found_name}
-        else:
-            st.session_state[coord_key] = None
+                st.session_state.target_coords = {"lat": lat, "lon": lon, "name": found_name}
 
     if col_s3.button("検索＆確定", key="btn_confirm_loc"):
         if search_query:
             lat, lon, found_name = geocode_location_jp(search_query)
             if lat and lon:
-                st.session_state[coord_key] = {"lat": lat, "lon": lon, "name": found_name}
-                # Firestoreに検索地点と日付をまとめて保存
-                plan_doc_ref.update({
-                    "weather_location": search_query,
-                    "weather_lat": lat,
-                    "weather_lon": lon,
-                    "weather_name": found_name,
-                    "weather_date": str(target_date)
-                })
-                st.success(f"「{found_name}」の情報を取得・保存しました！")
+                st.session_state.target_coords = {"lat": lat, "lon": lon, "name": found_name}
+                st.success(f"「{found_name}」の情報を取得しました！")
             else:
-                st.error("指定されたスポットが見つかりませんでした。より大きな地名で試してください。")
+                st.error("指定されたスポットが見つかりませんでした。")
 
     if col_btn1.button("＋ 1日"):
         st.session_state.num_forecast_days = min(7, st.session_state.num_forecast_days + 1)
@@ -813,34 +762,29 @@ with tab6:
         st.rerun()
 
     st.divider()
-    coords = st.session_state.get(coord_key)
-    if coords:
+    if st.session_state.get("target_coords"):
+        coords = st.session_state.target_coords
         n_days = st.session_state.num_forecast_days
         st.subheader(f"📍 {coords['name']} の気象予報・実績 (3時間ごと / {target_date} から {n_days} 日間)")
         weather_cards = fetch_weather_3h_smart(coords["lat"], coords["lon"], target_date, num_days=n_days)
-        
         if weather_cards:
-            # ★ スマホ表示で順番が崩れないよう、4つずつ行（row）に分けてからカラムを作る
-            for i in range(0, len(weather_cards), 4):
-                chunk = weather_cards[i:i+4]
-                cols = st.columns(4)
-                for j, w in enumerate(chunk):
-                    with cols[j]:
-                        st.markdown(f"""
-                        <div style="background: #f0f4f8; border-radius: 10px; padding: 12px; margin-bottom: 12px; border-left: 4px solid #2a5298; text-align: center;">
-                            <span style="font-size: 12px; color: #666; font-weight: bold;">{w['date_time']}</span>
-                            <div style="font-size: 36px; margin: 4px 0;">{w['icon']}</div>
-                            <div style="font-size: 13px; font-weight: bold; color: #333;">{w['desc']}</div>
-                            <hr style="margin: 8px 0; border: none; border-top: 1px solid #ddd;"/>
-                            <div style="font-size: 14px; color: #d35400;">🌡️ <b>{w['temp']}</b></div>
-                            <div style="font-size: 13px; color: #2980b9; margin-top:2px;">💧 雨量: <b>{w['precip']} mm</b></div>
-                            <div style="font-size: 13px; color: #2980b9; margin-top:2px;">🚩 風向: <b>{w['dir']} ({w['speed']})</b></div>
-                        </div>
-                        """, unsafe_allow_html=True)
+            cols = st.columns(4)
+            for idx, w in enumerate(weather_cards):
+                with cols[idx % 4]:
+                    st.markdown(f"""
+                    <div style="background: #f0f4f8; border-radius: 10px; padding: 12px; margin-bottom: 12px; border-left: 4px solid #2a5298; text-align: center;">
+                        <span style="font-size: 12px; color: #666; font-weight: bold;">{w['date_time']}</span>
+                        <div style="font-size: 36px; margin: 4px 0;">{w['icon']}</div>
+                        <div style="font-size: 13px; font-weight: bold; color: #333;">{w['desc']}</div>
+                        <hr style="margin: 8px 0; border: none; border-top: 1px solid #ddd;"/>
+                        <div style="font-size: 14px; color: #d35400;">🌡️ <b>{w['temp']}</b></div>
+                        <div style="font-size: 13px; color: #2980b9;">🚩 風: <b>{w['dir']} ({w['speed']})</b></div>
+                    </div>
+                    """, unsafe_allow_html=True)
         else:
             st.warning("指定された日付の気象データを取得できませんでした。")
     else:
-        st.info("👆 検索欄に場所を入力して「検索＆確定」を押してください。")
+        st.info("👆 行程表に登録された場所の予報が自動セットされます。別の場所を見る場合は検索欄に入力して「検索＆確定」を押してください。")
 
 # =========================================================
 # ⑦ 操作マニュアル & グラフィカル遠征しおり
