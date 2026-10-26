@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 import os
 import requests
 import urllib.request
+import urllib.parse
 import base64
 from PIL import Image, ImageDraw, ImageFont
 from streamlit_image_coordinates import streamlit_image_coordinates
@@ -137,13 +138,24 @@ def save_optimized_image(uploaded_file, save_path, max_width=800):
     img.save(save_path, "JPEG", quality=75)
 
 # ---------------------------------------------------------
-# 地名検索＆天気予報モジュール
+# 地名検索モジュール (国土地理院API強化版)
 # ---------------------------------------------------------
 def geocode_location_jp(location_name):
     if not location_name:
         return None, None, None
+    
     try:
-        url = f"https://nominatim.openstreetmap.org/search?format=json&q={location_name}&countrycodes=jp&limit=1"
+        url_gsi = f"https://msearch.gsi.go.jp/address/search?q={urllib.parse.quote(location_name)}"
+        res_gsi = requests.get(url_gsi).json()
+        if res_gsi and len(res_gsi) > 0:
+            coords = res_gsi[0]["geometry"]["coordinates"]
+            title = res_gsi[0]["properties"]["title"]
+            return float(coords[1]), float(coords[0]), title
+    except Exception:
+        pass
+        
+    try:
+        url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(location_name)}&countrycodes=jp&limit=1"
         headers = {"User-Agent": "FishingApp/1.0"}
         res = requests.get(url, headers=headers).json()
         if res and len(res) > 0:
@@ -154,13 +166,14 @@ def geocode_location_jp(location_name):
         pass
     
     try:
-        url_alt = f"https://geocoding-api.open-meteo.com/v1/search?name={location_name}&count=1&language=ja&format=json"
+        url_alt = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(location_name)}&count=1&language=ja&format=json"
         res_alt = requests.get(url_alt).json()
         if "results" in res_alt and len(res_alt["results"]) > 0:
             target = res_alt["results"][0]
             return target["latitude"], target["longitude"], target.get("name", location_name)
     except Exception:
         pass
+        
     return None, None, None
 
 def get_wind_direction_16(deg):
@@ -185,10 +198,10 @@ def fetch_weather_3h_smart(lat, lon, start_date_obj, num_days=1):
         target_dates = [(start_date_obj + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(num_days)]
         
         if start_date_obj >= today_obj - timedelta(days=2):
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,weathercode,windspeed_10m,winddirection_10m&forecast_days=14&timezone=Asia%2FTokyo"
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,weathercode,windspeed_10m,winddirection_10m,precipitation&forecast_days=14&timezone=Asia%2FTokyo"
         else:
             end_d_str = (start_date_obj + timedelta(days=num_days)).strftime("%Y-%m-%d")
-            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={target_dates[0]}&end_date={end_d_str}&hourly=temperature_2m,weathercode,windspeed_10m,winddirection_10m&timezone=Asia%2FTokyo"
+            url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date={target_dates[0]}&end_date={end_d_str}&hourly=temperature_2m,weathercode,windspeed_10m,winddirection_10m,precipitation&timezone=Asia%2FTokyo"
             
         res = requests.get(url).json()
         if "hourly" in res:
@@ -197,7 +210,8 @@ def fetch_weather_3h_smart(lat, lon, start_date_obj, num_days=1):
                 "temp": res["hourly"]["temperature_2m"],
                 "code": res["hourly"]["weathercode"],
                 "speed": res["hourly"]["windspeed_10m"],
-                "deg": res["hourly"]["winddirection_10m"]
+                "deg": res["hourly"]["winddirection_10m"],
+                "precip": res["hourly"].get("precipitation", 0)
             })
             df_filtered = df_h[df_h["time"].apply(lambda x: x.split("T")[0] in target_dates)].copy()
             df_filtered["hour"] = df_filtered["time"].apply(lambda x: int(x.split("T")[1].split(":")[0]))
@@ -214,7 +228,8 @@ def fetch_weather_3h_smart(lat, lon, start_date_obj, num_days=1):
                     "desc": desc,
                     "temp": f"{row['temp']:.1f}℃",
                     "speed": f"{row['speed']:.1f} m/s",
-                    "dir": get_wind_direction_16(row["deg"])
+                    "dir": get_wind_direction_16(row["deg"]),
+                    "precip": f"{row['precip']:.1f}"
                 })
             return results
     except Exception:
@@ -236,12 +251,28 @@ sidebar = st.sidebar
 sidebar.header("📁 釣行計画の選択")
 
 plan_names = plans_df["name"].tolist()
-selected_plan_name = sidebar.selectbox("現在の計画", plan_names)
+
+# ★ 修正1: URLのクエリパラメータから最後に開いていた計画IDを復元する
+url_params = st.query_params
+url_plan_id = url_params.get("plan")
+
+default_index = 0
+if url_plan_id:
+    # URLに保存されていたIDと一致する計画を探す
+    match_indices = plans_df.index[plans_df['id'] == url_plan_id].tolist()
+    if match_indices:
+        default_index = match_indices[0]
+
+selected_plan_name = sidebar.selectbox("現在の計画", plan_names, index=default_index)
 
 current_plan = plans_df[plans_df["name"] == selected_plan_name].iloc[0]
 plan_id = current_plan["id"]
-members = current_plan.get("members", [])
 
+# ★ 修正1: 選択された計画IDをURLに記憶させる（F5リロード対策）
+if url_plan_id != plan_id:
+    st.query_params["plan"] = plan_id
+
+members = current_plan.get("members", [])
 raw_start = current_plan.get("start_date")
 raw_end = current_plan.get("end_date")
 
@@ -287,6 +318,8 @@ with sidebar.expander("🗑️ 計画を削除"):
     confirm_del = st.checkbox("この計画を削除することを確認", key="confirm_delete_plan")
     if st.button("現在の計画を削除", key="btn_delete_plan", type="primary") and confirm_del:
         delete_plan(plan_id)
+        # 削除後はURLパラメータをクリア
+        st.query_params.clear()
         st.session_state.toast_msg = f"「{selected_plan_name}」を削除しました。"
         st.rerun()
 
@@ -308,18 +341,18 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 plan_doc_ref = db.collection("plans").document(plan_id)
 
 # =========================================================
-# ① 行程表の管理 (場所とメモのメリハリ強化＆削除確認)
+# ① 行程表の管理
 # =========================================================
 with tab1:
     st.header(f"🗓️ {selected_plan_name} ({s_date} 〜 {e_date})")
     col1, col2 = st.columns([1, 2.5])
     with col1:
         st.subheader("予定の追加")
-        sched_date = st.date_input("日付", value=s_date_obj, key="sched_date_input")
-        sched_time = st.time_input("時間", key="sched_time_input")
-        location = st.text_input("場所・施設名", placeholder="〇〇港 / フェリー乗り場", key="sched_loc_input")
-        activity = st.text_area("内容・メモ", key="sched_act_input")
-        if st.button("行程に追加", key="btn_add_sched"):
+        sched_date = st.date_input("日付", value=s_date_obj, key=f"sched_date_input_{plan_id}")
+        sched_time = st.time_input("時間", key=f"sched_time_input_{plan_id}")
+        location = st.text_input("場所・施設名", placeholder="〇〇港 / フェリー乗り場", key=f"sched_loc_input_{plan_id}")
+        activity = st.text_area("内容・メモ", key=f"sched_act_input_{plan_id}")
+        if st.button("行程に追加", key=f"btn_add_sched_{plan_id}"):
             if location or activity:
                 dt_str = f"{sched_date} {sched_time.strftime('%H:%M')}"
                 plan_doc_ref.collection("itinerary").add({
@@ -335,11 +368,9 @@ with tab1:
         if itin_list:
             for item in itin_list:
                 item_id = item["id"]
-                # 割合を調整し、場所とメモを上下にメリハリをつけて表示
                 cols = st.columns([0.25, 0.6, 0.15])
                 cols[0].write(f"**{item.get('date_time', '')}**")
                 
-                # HTMLで場所（太字・青系）とメモ（グレー・少し小さめ）を綺麗にデザイン
                 loc_html = f"<div style='line-height: 1.4;'><strong style='font-size: 1.1em; color: #2a5298;'>📍 {item.get('location', '-')}</strong>"
                 act_text = item.get("activity", "")
                 if act_text:
@@ -358,19 +389,19 @@ with tab1:
             st.info("登録されている行程はありません。")
 
 # =========================================================
-# ② 旅費管理 (メモ表示＆編集機能＆削除確認を追加)
+# ② 旅費管理
 # =========================================================
 with tab2:
     st.header(f"💰 {selected_plan_name} - 旅費＆割り勘計算")
     col1, col2 = st.columns([1, 2.5])
     with col1:
         st.subheader("支出の登録")
-        exp_cat = st.selectbox("カテゴリ", ["交通費・渡航費", "船代・遊漁料", "宿泊費", "エサ・仕掛け", "食費・雑費", "その他"], key="exp_cat_select")
-        exp_item = st.text_input("項目名", placeholder="〇〇丸 船代", key="exp_item_input")
-        exp_amount = st.number_input("金額 (円)", min_value=0, step=100, key="exp_amount_input")
-        exp_payer = st.selectbox("支払った人", members if members else ["未設定"], key="exp_payer_select")
-        exp_memo = st.text_input("メモ", key="exp_memo_input")
-        if st.button("支出を追加", key="btn_add_exp"):
+        exp_cat = st.selectbox("カテゴリ", ["交通費・渡航費", "船代・遊漁料", "宿泊費", "エサ・仕掛け", "食費・雑費", "その他"], key=f"exp_cat_select_{plan_id}")
+        exp_item = st.text_input("項目名", placeholder="〇〇丸 船代", key=f"exp_item_input_{plan_id}")
+        exp_amount = st.number_input("金額 (円)", min_value=0, step=100, key=f"exp_amount_input_{plan_id}")
+        exp_payer = st.selectbox("支払った人", members if members else ["未設定"], key=f"exp_payer_select_{plan_id}")
+        exp_memo = st.text_input("メモ", key=f"exp_memo_input_{plan_id}")
+        if st.button("支出を追加", key=f"btn_add_exp_{plan_id}"):
             if exp_amount > 0 and exp_item:
                 plan_doc_ref.collection("expenses").add({
                     "category": exp_cat, "item": exp_item, "amount": int(exp_amount),
@@ -397,14 +428,12 @@ with tab2:
             st.subheader("支出明細")
             for exp in exp_list:
                 e_id = exp["id"]
-                # 4カラムにしてスマホでも見やすく、メモも表示
                 cols = st.columns([0.35, 0.3, 0.25, 0.1])
                 cols[0].markdown(f"**{exp.get('category', '')}**<br><span style='font-size:0.9em;'>{exp.get('item', '-')}</span>", unsafe_allow_html=True)
                 cols[1].markdown(f"**¥{exp.get('amount', 0):,}**<br><span style='font-size:0.85em; color:#555;'>👤 {exp.get('payer', '-')}</span>", unsafe_allow_html=True)
                 cols[2].markdown(f"<span style='font-size:0.85em; color:#777;'>📝 {exp.get('memo', '')}</span>", unsafe_allow_html=True)
                 
                 with cols[3]:
-                    # 編集と削除をまとめたポップオーバー（設定ボタン）
                     with st.popover("⚙️"):
                         st.markdown("**✏️ 内容の編集**")
                         cats = ["交通費・渡航費", "船代・遊漁料", "宿泊費", "エサ・仕掛け", "食費・雑費", "その他"]
@@ -437,17 +466,17 @@ with tab2:
             st.dataframe(payer_summary.rename(columns={"payer": "支払者", "amount": "合計立替額"}), use_container_width=True)
 
 # =========================================================
-# ③ 個人別持ち物チェックリスト (削除確認ポップオーバー)
+# ③ 個人別持ち物チェックリスト
 # =========================================================
 with tab3:
     st.header(f"✅ {selected_plan_name} - 個人別持ち物チェック")
-    filter_member = st.selectbox("表示するメンバーで絞り込み", ["全員表示"] + members, key="chk_filter_select")
+    filter_member = st.selectbox("表示するメンバーで絞り込み", ["全員表示"] + members, key=f"chk_filter_select_{plan_id}")
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        new_item = st.text_input("追加する持ち物", placeholder="ロッド、ライジャケなど", key="chk_new_item_input")
+        new_item = st.text_input("追加する持ち物", placeholder="ロッド、ライジャケなど", key=f"chk_new_item_input_{plan_id}")
     with col_b:
-        assignee = st.selectbox("担当者", ["全員 (各自持参)"] + members, key="chk_assignee_select")
-        if st.button("持ち物を追加", key="btn_add_chk") and new_item:
+        assignee = st.selectbox("担当者", ["全員 (各自持参)"] + members, key=f"chk_assignee_select_{plan_id}")
+        if st.button("持ち物を追加", key=f"btn_add_chk_{plan_id}") and new_item:
             plan_doc_ref.collection("checklist").add({
                 "item": new_item, "assignee": assignee, "checked": False, "created_at": datetime.now()
             })
@@ -482,22 +511,22 @@ with tab3:
         st.info("該当する持ち物は登録されていません。")
 
 # =========================================================
-# ④ 釣果記録 (削除確認チェックボックス)
+# ④ 釣果記録
 # =========================================================
 with tab4:
     st.header(f"🐟 {selected_plan_name} - 釣果ログ")
     col1, col2 = st.columns([1, 2])
     with col1:
         st.subheader("釣果の追加")
-        c_date = st.date_input("日付", value=date.today(), key="catch_date_input")
-        c_loc = st.text_input("ポイント・釣場", placeholder="〇〇堤防 / 沖の根", key="catch_loc_input")
-        c_species = st.text_input("魚種", placeholder="カンパチ / アオリイカ", key="catch_species_input")
-        c_size = st.number_input("サイズ (cm)", min_value=0.0, step=0.5, key="catch_size_input")
-        c_count = st.number_input("匹数", min_value=1, value=1, key="catch_count_input")
-        c_lure = st.text_input("ヒットルアー・仕掛け", placeholder="MIU 2.2g / ジグ 60g", key="catch_lure_input")
-        c_notes = st.text_area("状況・ヒットメモ", placeholder="潮動時にフォールでヒット", key="catch_notes_input")
-        c_img = st.file_uploader("釣果写真", type=["jpg", "jpeg", "png"], key="catch_img_input")
-        if st.button("釣果を記録", key="btn_add_catch"):
+        c_date = st.date_input("日付", value=date.today(), key=f"catch_date_input_{plan_id}")
+        c_loc = st.text_input("ポイント・釣場", placeholder="〇〇堤防 / 沖の根", key=f"catch_loc_input_{plan_id}")
+        c_species = st.text_input("魚種", placeholder="カンパチ / アオリイカ", key=f"catch_species_input_{plan_id}")
+        c_size = st.number_input("サイズ (cm)", min_value=0.0, step=0.5, key=f"catch_size_input_{plan_id}")
+        c_count = st.number_input("匹数", min_value=1, value=1, key=f"catch_count_input_{plan_id}")
+        c_lure = st.text_input("ヒットルアー・仕掛け", placeholder="MIU 2.2g / ジグ 60g", key=f"catch_lure_input_{plan_id}")
+        c_notes = st.text_area("状況・ヒットメモ", placeholder="潮動時にフォールでヒット", key=f"catch_notes_input_{plan_id}")
+        c_img = st.file_uploader("釣果写真", type=["jpg", "jpeg", "png"], key=f"catch_img_input_{plan_id}")
+        if st.button("釣果を記録", key=f"btn_add_catch_{plan_id}"):
             if c_species:
                 img_path = ""
                 if c_img is not None:
@@ -529,7 +558,6 @@ with tab4:
                         st.write(f"**ヒットルアー/仕掛け:** {catch.get('lure', '-')}")
                         st.write(f"**状況・メモ:** {catch.get('notes', '-')}")
                     with c_col3:
-                        # 削除前にチェックを求める
                         del_conf_c = st.checkbox("削除確認", key=f"conf_catch_{c_id}")
                         if st.button("🗑️ 削除", key=f"del_catch_{c_id}", type="primary", disabled=not del_conf_c):
                             plan_doc_ref.collection("catches").document(c_id).delete()
@@ -539,7 +567,7 @@ with tab4:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ (マップ＆ピンの削除確認)
+# ⑤ ポイントマップ
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -558,9 +586,9 @@ with tab5:
     st.subheader("1. 釣場画像・図面の管理")
     col_u1, col_u2 = st.columns([2, 1])
     with col_u1:
-        map_img_file = st.file_uploader("航空写真やマップ画像を選択 (JPEG/PNG)", type=["jpg", "jpeg", "png"], key="map_img_file_picker")
+        map_img_file = st.file_uploader("航空写真やマップ画像を選択 (JPEG/PNG)", type=["jpg", "jpeg", "png"], key=f"map_img_file_picker_{plan_id}")
         if map_img_file is not None:
-            if st.button("💾 マップ画像を確定・保存", key="btn_confirm_map_img", type="primary"):
+            if st.button("💾 マップ画像を確定・保存", key=f"btn_confirm_map_img_{plan_id}", type="primary"):
                 saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
                 save_optimized_image(map_img_file, saved_map_path)
                 plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
@@ -568,10 +596,9 @@ with tab5:
                 st.rerun()
     with col_u2:
         if current_map_path and os.path.exists(current_map_path):
-            # マップ画像削除の確認ポップオーバー
             with st.popover("🗑️ 現在のマップ画像を削除"):
                 st.write("本当に画像を削除しますか？（ピンのデータは残ります）")
-                if st.button("画像削除を実行", key="btn_del_map_img", type="primary"):
+                if st.button("画像削除を実行", key=f"btn_del_map_img_{plan_id}", type="primary"):
                     try:
                         os.remove(current_map_path)
                     except Exception:
@@ -584,7 +611,7 @@ with tab5:
 
     pins_docs = plan_doc_ref.collection("pins").stream()
     pins_list = [{"id": d.id, **d.to_dict()} for d in pins_docs]
-    show_all_pins = st.toggle("全ピンを一括表示/非表示", value=True, key="toggle_all_pins")
+    show_all_pins = st.toggle("全ピンを一括表示/非表示", value=True, key=f"toggle_all_pins_{plan_id}")
     
     if current_map_path and os.path.exists(current_map_path):
         st.subheader("📍 画像上をタップ/クリックしてピンを設置")
@@ -709,7 +736,6 @@ with tab5:
                     st.session_state.toast_msg = "ピン情報を更新しました！"
                     st.rerun()
                 
-                # ピンの削除確認チェックボックス
                 del_conf_p = btn_cols[2].checkbox("削除確認", key=f"conf_pin_{p_id}")
                 if btn_cols[3].button("🗑️ 削除", key=f"del_pin_{p_id}", type="primary", disabled=not del_conf_p):
                     plan_doc_ref.collection("pins").document(p_id).delete()
@@ -717,16 +743,33 @@ with tab5:
                     st.rerun()
 
 # =========================================================
-# ⑥ 天気・風予報（3時間おきグラフィカル表示）
+# ⑥ 天気・風予報
 # =========================================================
 with tab6:
     st.header("🌤️ 釣場ポイントのピンポイント気象・風予報")
+    
+    plan_data = plan_doc_ref.get().to_dict() or {}
+    saved_weather_loc = plan_data.get("weather_location", "")
+    saved_lat = plan_data.get("weather_lat")
+    saved_lon = plan_data.get("weather_lon")
+    saved_name = plan_data.get("weather_name")
+    saved_date_str = plan_data.get("weather_date")
+
     itin_docs = plan_doc_ref.collection("itinerary").order_by("date_time").stream()
     itin_list = [d.to_dict() for d in itin_docs]
-    default_loc = ""
+    
+    default_loc = saved_weather_loc
     default_date = s_date_obj
-    if itin_list:
+    
+    if not default_loc and itin_list:
         default_loc = itin_list[0].get("location", "")
+        
+    if saved_date_str:
+        try:
+            default_date = datetime.strptime(saved_date_str, "%Y-%m-%d").date()
+        except:
+            pass
+    elif itin_list:
         try:
             default_date = datetime.strptime(itin_list[0].get("date_time", "").split()[0], "%Y-%m-%d").date()
         except:
@@ -736,55 +779,77 @@ with tab6:
         st.session_state.num_forecast_days = 1
 
     col_s1, col_s2, col_s3, col_btn1, col_btn2 = st.columns([2.5, 1.5, 1, 0.5, 0.5])
-    search_query = col_s1.text_input("釣場・スポット名を入力", value=default_loc, placeholder="例: 奥多摩湖、神津島など", key="weather_search_input")
-    target_date = col_s2.date_input("日付を選択（過去・未来対応）", value=default_date, key="target_date_select")
     
-    if "target_coords" not in st.session_state or st.session_state.target_coords is None:
-        if default_loc:
+    # ★ 修正2: 「計画ごとの専用ID」を部品に割り振ることで、計画間で日付や地名が混ざる・上書きされるバグを完全防止
+    search_query = col_s1.text_input("釣場・スポット名を入力", value=default_loc, placeholder="例: 奥多摩湖、神津島など", key=f"weather_search_input_{plan_id}")
+    target_date = col_s2.date_input("日付を選択（過去・未来対応）", value=default_date, key=f"target_date_select_{plan_id}")
+    
+    if str(target_date) != plan_data.get("weather_date"):
+        plan_doc_ref.update({"weather_date": str(target_date)})
+    
+    coord_key = f"weather_coords_{plan_id}"
+    
+    if coord_key not in st.session_state:
+        if saved_lat and saved_lon:
+            st.session_state[coord_key] = {"lat": saved_lat, "lon": saved_lon, "name": saved_name}
+        elif default_loc:
             lat, lon, found_name = geocode_location_jp(default_loc)
             if lat and lon:
-                st.session_state.target_coords = {"lat": lat, "lon": lon, "name": found_name}
+                st.session_state[coord_key] = {"lat": lat, "lon": lon, "name": found_name}
+        else:
+            st.session_state[coord_key] = None
 
-    if col_s3.button("検索＆確定", key="btn_confirm_loc"):
+    if col_s3.button("検索＆確定", key=f"btn_confirm_loc_{plan_id}"):
         if search_query:
             lat, lon, found_name = geocode_location_jp(search_query)
             if lat and lon:
-                st.session_state.target_coords = {"lat": lat, "lon": lon, "name": found_name}
-                st.success(f"「{found_name}」の情報を取得しました！")
+                st.session_state[coord_key] = {"lat": lat, "lon": lon, "name": found_name}
+                plan_doc_ref.update({
+                    "weather_location": search_query,
+                    "weather_lat": lat,
+                    "weather_lon": lon,
+                    "weather_name": found_name,
+                    "weather_date": str(target_date)
+                })
+                st.success(f"「{found_name}」の情報を取得・保存しました！")
             else:
-                st.error("指定されたスポットが見つかりませんでした。")
+                st.error("指定されたスポットが見つかりませんでした。より大きな地名で試してください。")
 
-    if col_btn1.button("＋ 1日"):
+    if col_btn1.button("＋ 1日", key=f"btn_add_day_{plan_id}"):
         st.session_state.num_forecast_days = min(7, st.session_state.num_forecast_days + 1)
         st.rerun()
-    if col_btn2.button("ー 1日"):
+    if col_btn2.button("ー 1日", key=f"btn_sub_day_{plan_id}"):
         st.session_state.num_forecast_days = max(1, st.session_state.num_forecast_days - 1)
         st.rerun()
 
     st.divider()
-    if st.session_state.get("target_coords"):
-        coords = st.session_state.target_coords
+    coords = st.session_state.get(coord_key)
+    if coords:
         n_days = st.session_state.num_forecast_days
         st.subheader(f"📍 {coords['name']} の気象予報・実績 (3時間ごと / {target_date} から {n_days} 日間)")
         weather_cards = fetch_weather_3h_smart(coords["lat"], coords["lon"], target_date, num_days=n_days)
+        
         if weather_cards:
-            cols = st.columns(4)
-            for idx, w in enumerate(weather_cards):
-                with cols[idx % 4]:
-                    st.markdown(f"""
-                    <div style="background: #f0f4f8; border-radius: 10px; padding: 12px; margin-bottom: 12px; border-left: 4px solid #2a5298; text-align: center;">
-                        <span style="font-size: 12px; color: #666; font-weight: bold;">{w['date_time']}</span>
-                        <div style="font-size: 36px; margin: 4px 0;">{w['icon']}</div>
-                        <div style="font-size: 13px; font-weight: bold; color: #333;">{w['desc']}</div>
-                        <hr style="margin: 8px 0; border: none; border-top: 1px solid #ddd;"/>
-                        <div style="font-size: 14px; color: #d35400;">🌡️ <b>{w['temp']}</b></div>
-                        <div style="font-size: 13px; color: #2980b9;">🚩 風: <b>{w['dir']} ({w['speed']})</b></div>
-                    </div>
-                    """, unsafe_allow_html=True)
+            for i in range(0, len(weather_cards), 4):
+                chunk = weather_cards[i:i+4]
+                cols = st.columns(4)
+                for j, w in enumerate(chunk):
+                    with cols[j]:
+                        st.markdown(f"""
+                        <div style="background: #f0f4f8; border-radius: 10px; padding: 12px; margin-bottom: 12px; border-left: 4px solid #2a5298; text-align: center;">
+                            <span style="font-size: 12px; color: #666; font-weight: bold;">{w['date_time']}</span>
+                            <div style="font-size: 36px; margin: 4px 0;">{w['icon']}</div>
+                            <div style="font-size: 13px; font-weight: bold; color: #333;">{w['desc']}</div>
+                            <hr style="margin: 8px 0; border: none; border-top: 1px solid #ddd;"/>
+                            <div style="font-size: 14px; color: #d35400;">🌡️ <b>{w['temp']}</b></div>
+                            <div style="font-size: 13px; color: #2980b9; margin-top:2px;">💧 雨量: <b>{w['precip']} mm</b></div>
+                            <div style="font-size: 13px; color: #2980b9; margin-top:2px;">🚩 風向: <b>{w['dir']} ({w['speed']})</b></div>
+                        </div>
+                        """, unsafe_allow_html=True)
         else:
             st.warning("指定された日付の気象データを取得できませんでした。")
     else:
-        st.info("👆 行程表に登録された場所の予報が自動セットされます。別の場所を見る場合は検索欄に入力して「検索＆確定」を押してください。")
+        st.info("👆 検索欄に場所を入力して「検索＆確定」を押してください。")
 
 # =========================================================
 # ⑦ 操作マニュアル & グラフィカル遠征しおり
