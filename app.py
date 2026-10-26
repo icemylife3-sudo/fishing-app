@@ -335,11 +335,9 @@ with tab1:
         if itin_list:
             for item in itin_list:
                 item_id = item["id"]
-                # 割合を調整し、場所とメモを上下にメリハリをつけて表示
                 cols = st.columns([0.25, 0.6, 0.15])
                 cols[0].write(f"**{item.get('date_time', '')}**")
                 
-                # HTMLで場所（太字・青系）とメモ（グレー・少し小さめ）を綺麗にデザイン
                 loc_html = f"<div style='line-height: 1.4;'><strong style='font-size: 1.1em; color: #2a5298;'>📍 {item.get('location', '-')}</strong>"
                 act_text = item.get("activity", "")
                 if act_text:
@@ -397,14 +395,12 @@ with tab2:
             st.subheader("支出明細")
             for exp in exp_list:
                 e_id = exp["id"]
-                # 4カラムにしてスマホでも見やすく、メモも表示
                 cols = st.columns([0.35, 0.3, 0.25, 0.1])
                 cols[0].markdown(f"**{exp.get('category', '')}**<br><span style='font-size:0.9em;'>{exp.get('item', '-')}</span>", unsafe_allow_html=True)
                 cols[1].markdown(f"**¥{exp.get('amount', 0):,}**<br><span style='font-size:0.85em; color:#555;'>👤 {exp.get('payer', '-')}</span>", unsafe_allow_html=True)
                 cols[2].markdown(f"<span style='font-size:0.85em; color:#777;'>📝 {exp.get('memo', '')}</span>", unsafe_allow_html=True)
                 
                 with cols[3]:
-                    # 編集と削除をまとめたポップオーバー（設定ボタン）
                     with st.popover("⚙️"):
                         st.markdown("**✏️ 内容の編集**")
                         cats = ["交通費・渡航費", "船代・遊漁料", "宿泊費", "エサ・仕掛け", "食費・雑費", "その他"]
@@ -529,7 +525,6 @@ with tab4:
                         st.write(f"**ヒットルアー/仕掛け:** {catch.get('lure', '-')}")
                         st.write(f"**状況・メモ:** {catch.get('notes', '-')}")
                     with c_col3:
-                        # 削除前にチェックを求める
                         del_conf_c = st.checkbox("削除確認", key=f"conf_catch_{c_id}")
                         if st.button("🗑️ 削除", key=f"del_catch_{c_id}", type="primary", disabled=not del_conf_c):
                             plan_doc_ref.collection("catches").document(c_id).delete()
@@ -568,7 +563,6 @@ with tab5:
                 st.rerun()
     with col_u2:
         if current_map_path and os.path.exists(current_map_path):
-            # マップ画像削除の確認ポップオーバー
             with st.popover("🗑️ 現在のマップ画像を削除"):
                 st.write("本当に画像を削除しますか？（ピンのデータは残ります）")
                 if st.button("画像削除を実行", key="btn_del_map_img", type="primary"):
@@ -709,7 +703,6 @@ with tab5:
                     st.session_state.toast_msg = "ピン情報を更新しました！"
                     st.rerun()
                 
-                # ピンの削除確認チェックボックス
                 del_conf_p = btn_cols[2].checkbox("削除確認", key=f"conf_pin_{p_id}")
                 if btn_cols[3].button("🗑️ 削除", key=f"del_pin_{p_id}", type="primary", disabled=not del_conf_p):
                     plan_doc_ref.collection("pins").document(p_id).delete()
@@ -717,16 +710,28 @@ with tab5:
                     st.rerun()
 
 # =========================================================
-# ⑥ 天気・風予報（3時間おきグラフィカル表示）
+# ⑥ 天気・風予報（モバイル表示対応 ＆ 検索永続化版）
 # =========================================================
 with tab6:
     st.header("🌤️ 釣場ポイントのピンポイント気象・風予報")
+    
+    # Firestoreから保存済みの天気設定を取得（検索リセット防止用）
+    plan_data = plan_doc_ref.get().to_dict() or {}
+    saved_weather_loc = plan_data.get("weather_location", "")
+    saved_lat = plan_data.get("weather_lat")
+    saved_lon = plan_data.get("weather_lon")
+    saved_name = plan_data.get("weather_name")
+
     itin_docs = plan_doc_ref.collection("itinerary").order_by("date_time").stream()
     itin_list = [d.to_dict() for d in itin_docs]
-    default_loc = ""
+    
+    default_loc = saved_weather_loc
     default_date = s_date_obj
-    if itin_list:
+    
+    if not default_loc and itin_list:
         default_loc = itin_list[0].get("location", "")
+        
+    if itin_list:
         try:
             default_date = datetime.strptime(itin_list[0].get("date_time", "").split()[0], "%Y-%m-%d").date()
         except:
@@ -739,18 +744,31 @@ with tab6:
     search_query = col_s1.text_input("釣場・スポット名を入力", value=default_loc, placeholder="例: 奥多摩湖、神津島など", key="weather_search_input")
     target_date = col_s2.date_input("日付を選択（過去・未来対応）", value=default_date, key="target_date_select")
     
-    if "target_coords" not in st.session_state or st.session_state.target_coords is None:
-        if default_loc:
+    coord_key = f"weather_coords_{plan_id}"
+    
+    if coord_key not in st.session_state:
+        if saved_lat and saved_lon:
+            st.session_state[coord_key] = {"lat": saved_lat, "lon": saved_lon, "name": saved_name}
+        elif default_loc:
             lat, lon, found_name = geocode_location_jp(default_loc)
             if lat and lon:
-                st.session_state.target_coords = {"lat": lat, "lon": lon, "name": found_name}
+                st.session_state[coord_key] = {"lat": lat, "lon": lon, "name": found_name}
+        else:
+            st.session_state[coord_key] = None
 
     if col_s3.button("検索＆確定", key="btn_confirm_loc"):
         if search_query:
             lat, lon, found_name = geocode_location_jp(search_query)
             if lat and lon:
-                st.session_state.target_coords = {"lat": lat, "lon": lon, "name": found_name}
-                st.success(f"「{found_name}」の情報を取得しました！")
+                st.session_state[coord_key] = {"lat": lat, "lon": lon, "name": found_name}
+                # Firestoreに検索地点を保存（タブ移動等のリセットを防止）
+                plan_doc_ref.update({
+                    "weather_location": search_query,
+                    "weather_lat": lat,
+                    "weather_lon": lon,
+                    "weather_name": found_name
+                })
+                st.success(f"「{found_name}」の情報を取得・保存しました！")
             else:
                 st.error("指定されたスポットが見つかりませんでした。")
 
@@ -762,29 +780,32 @@ with tab6:
         st.rerun()
 
     st.divider()
-    if st.session_state.get("target_coords"):
-        coords = st.session_state.target_coords
+    coords = st.session_state.get(coord_key)
+    if coords:
         n_days = st.session_state.num_forecast_days
         st.subheader(f"📍 {coords['name']} の気象予報・実績 (3時間ごと / {target_date} から {n_days} 日間)")
         weather_cards = fetch_weather_3h_smart(coords["lat"], coords["lon"], target_date, num_days=n_days)
         if weather_cards:
-            cols = st.columns(4)
-            for idx, w in enumerate(weather_cards):
-                with cols[idx % 4]:
-                    st.markdown(f"""
-                    <div style="background: #f0f4f8; border-radius: 10px; padding: 12px; margin-bottom: 12px; border-left: 4px solid #2a5298; text-align: center;">
-                        <span style="font-size: 12px; color: #666; font-weight: bold;">{w['date_time']}</span>
-                        <div style="font-size: 36px; margin: 4px 0;">{w['icon']}</div>
-                        <div style="font-size: 13px; font-weight: bold; color: #333;">{w['desc']}</div>
-                        <hr style="margin: 8px 0; border: none; border-top: 1px solid #ddd;"/>
-                        <div style="font-size: 14px; color: #d35400;">🌡️ <b>{w['temp']}</b></div>
-                        <div style="font-size: 13px; color: #2980b9;">🚩 風: <b>{w['dir']} ({w['speed']})</b></div>
-                    </div>
-                    """, unsafe_allow_html=True)
+            # 修正ポイント: モバイルで縦になっても時系列が崩れないように「4個ごとの行単位」で描画
+            for i in range(0, len(weather_cards), 4):
+                chunk = weather_cards[i:i+4]
+                cols = st.columns(4)
+                for j, w in enumerate(chunk):
+                    with cols[j]:
+                        st.markdown(f"""
+                        <div style="background: #f0f4f8; border-radius: 10px; padding: 12px; margin-bottom: 12px; border-left: 4px solid #2a5298; text-align: center;">
+                            <span style="font-size: 12px; color: #666; font-weight: bold;">{w['date_time']}</span>
+                            <div style="font-size: 36px; margin: 4px 0;">{w['icon']}</div>
+                            <div style="font-size: 13px; font-weight: bold; color: #333;">{w['desc']}</div>
+                            <hr style="margin: 8px 0; border: none; border-top: 1px solid #ddd;"/>
+                            <div style="font-size: 14px; color: #d35400;">🌡️ <b>{w['temp']}</b></div>
+                            <div style="font-size: 13px; color: #2980b9;">🚩 風: <b>{w['dir']} ({w['speed']})</b></div>
+                        </div>
+                        """, unsafe_allow_html=True)
         else:
             st.warning("指定された日付の気象データを取得できませんでした。")
     else:
-        st.info("👆 行程表に登録された場所の予報が自動セットされます。別の場所を見る場合は検索欄に入力して「検索＆確定」を押してください。")
+        st.info("👆 検索欄に場所を入力して「検索＆確定」を押してください。行程表に登録された場所があれば自動セットされます。")
 
 # =========================================================
 # ⑦ 操作マニュアル & グラフィカル遠征しおり
