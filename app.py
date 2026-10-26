@@ -25,6 +25,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
+# トースト通知（自動消去メッセージ）の処理
+# ---------------------------------------------------------
+if "toast_msg" not in st.session_state:
+    st.session_state.toast_msg = None
+
+if st.session_state.toast_msg:
+    st.toast(st.session_state.toast_msg, icon="✅")
+    st.session_state.toast_msg = None
+
+# ---------------------------------------------------------
 # 日本語フォントの自動読み込み（文字化け完全対策）
 # ---------------------------------------------------------
 @st.cache_resource
@@ -252,6 +262,7 @@ edit_end = col_s2.date_input("終了日", value=e_date_obj, key=f"edit_e_{plan_i
 
 if edit_start != s_date_obj or edit_end != e_date_obj:
     update_plan_dates(plan_id, edit_start, edit_end)
+    st.session_state.toast_msg = "日程を更新しました"
     st.rerun()
 
 s_date = str(edit_start)
@@ -268,7 +279,7 @@ with sidebar.expander("➕ 新しい計画を追加"):
     if st.button("計画を作成", key="btn_create_plan") and new_plan_name and new_members_str:
         m_list = [m.strip() for m in new_members_str.split(",") if m.strip()]
         create_plan(new_plan_name, new_start_date, new_end_date, m_list)
-        st.success(f"「{new_plan_name}」を作成しました！")
+        st.session_state.toast_msg = f"「{new_plan_name}」を作成しました！"
         st.rerun()
 
 with sidebar.expander("🗑️ 計画を削除"):
@@ -276,7 +287,7 @@ with sidebar.expander("🗑️ 計画を削除"):
     confirm_del = st.checkbox("この計画を削除することを確認", key="confirm_delete_plan")
     if st.button("現在の計画を削除", key="btn_delete_plan", type="primary") and confirm_del:
         delete_plan(plan_id)
-        st.success(f"「{selected_plan_name}」を削除しました。")
+        st.session_state.toast_msg = f"「{selected_plan_name}」を削除しました。"
         st.rerun()
 
 st.divider()
@@ -297,11 +308,11 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 plan_doc_ref = db.collection("plans").document(plan_id)
 
 # =========================================================
-# ① 行程表の管理
+# ① 行程表の管理 (場所とメモのメリハリ強化＆削除確認)
 # =========================================================
 with tab1:
     st.header(f"🗓️ {selected_plan_name} ({s_date} 〜 {e_date})")
-    col1, col2 = st.columns([1, 2])
+    col1, col2 = st.columns([1, 2.5])
     with col1:
         st.subheader("予定の追加")
         sched_date = st.date_input("日付", value=s_date_obj, key="sched_date_input")
@@ -314,7 +325,7 @@ with tab1:
                 plan_doc_ref.collection("itinerary").add({
                     "date_time": dt_str, "location": location, "activity": activity, "created_at": datetime.now()
                 })
-                st.success("追加しました！")
+                st.session_state.toast_msg = "行程を追加しました！"
                 st.rerun()
 
     with col2:
@@ -324,22 +335,34 @@ with tab1:
         if itin_list:
             for item in itin_list:
                 item_id = item["id"]
-                cols = st.columns([0.25, 0.25, 0.4, 0.1])
+                # 割合を調整し、場所とメモを上下にメリハリをつけて表示
+                cols = st.columns([0.25, 0.6, 0.15])
                 cols[0].write(f"**{item.get('date_time', '')}**")
-                cols[1].write(item.get("location", "-"))
-                cols[2].write(item.get("activity", "-"))
-                if cols[3].button("🗑️", key=f"del_itin_{item_id}"):
-                    plan_doc_ref.collection("itinerary").document(item_id).delete()
-                    st.rerun()
+                
+                # HTMLで場所（太字・青系）とメモ（グレー・少し小さめ）を綺麗にデザイン
+                loc_html = f"<div style='line-height: 1.4;'><strong style='font-size: 1.1em; color: #2a5298;'>📍 {item.get('location', '-')}</strong>"
+                act_text = item.get("activity", "")
+                if act_text:
+                    loc_html += f"<br><span style='color: #666; font-size: 0.9em; margin-left: 20px;'>{act_text}</span>"
+                loc_html += "</div>"
+                cols[1].markdown(loc_html, unsafe_allow_html=True)
+                
+                with cols[2]:
+                    with st.popover("🗑️"):
+                        st.write("削除しますか？")
+                        if st.button("削除実行", key=f"del_itin_{item_id}", type="primary"):
+                            plan_doc_ref.collection("itinerary").document(item_id).delete()
+                            st.session_state.toast_msg = "行程を削除しました"
+                            st.rerun()
         else:
             st.info("登録されている行程はありません。")
 
 # =========================================================
-# ② 旅費管理・自動割り勘計算
+# ② 旅費管理 (メモ表示＆編集機能＆削除確認を追加)
 # =========================================================
 with tab2:
     st.header(f"💰 {selected_plan_name} - 旅費＆割り勘計算")
-    col1, col2 = st.columns([1, 2])
+    col1, col2 = st.columns([1, 2.5])
     with col1:
         st.subheader("支出の登録")
         exp_cat = st.selectbox("カテゴリ", ["交通費・渡航費", "船代・遊漁料", "宿泊費", "エサ・仕掛け", "食費・雑費", "その他"], key="exp_cat_select")
@@ -353,7 +376,7 @@ with tab2:
                     "category": exp_cat, "item": exp_item, "amount": int(exp_amount),
                     "payer": exp_payer, "memo": exp_memo, "created_at": datetime.now()
                 })
-                st.success("支出を登録しました！")
+                st.session_state.toast_msg = "支出を登録しました！"
                 st.rerun()
 
     with col2:
@@ -374,14 +397,38 @@ with tab2:
             st.subheader("支出明細")
             for exp in exp_list:
                 e_id = exp["id"]
-                cols = st.columns([0.2, 0.3, 0.2, 0.2, 0.1])
-                cols[0].write(f"**{exp.get('category', '')}**")
-                cols[1].write(exp.get("item", "-"))
-                cols[2].write(f"¥{exp.get('amount', 0):,}")
-                cols[3].caption(f"支払: {exp.get('payer', '-')}")
-                if cols[4].button("🗑️", key=f"del_exp_{e_id}"):
-                    plan_doc_ref.collection("expenses").document(e_id).delete()
-                    st.rerun()
+                # 4カラムにしてスマホでも見やすく、メモも表示
+                cols = st.columns([0.35, 0.3, 0.25, 0.1])
+                cols[0].markdown(f"**{exp.get('category', '')}**<br><span style='font-size:0.9em;'>{exp.get('item', '-')}</span>", unsafe_allow_html=True)
+                cols[1].markdown(f"**¥{exp.get('amount', 0):,}**<br><span style='font-size:0.85em; color:#555;'>👤 {exp.get('payer', '-')}</span>", unsafe_allow_html=True)
+                cols[2].markdown(f"<span style='font-size:0.85em; color:#777;'>📝 {exp.get('memo', '')}</span>", unsafe_allow_html=True)
+                
+                with cols[3]:
+                    # 編集と削除をまとめたポップオーバー（設定ボタン）
+                    with st.popover("⚙️"):
+                        st.markdown("**✏️ 内容の編集**")
+                        cats = ["交通費・渡航費", "船代・遊漁料", "宿泊費", "エサ・仕掛け", "食費・雑費", "その他"]
+                        current_cat = exp.get("category", "その他")
+                        e_cat = st.selectbox("カテゴリ", cats, index=cats.index(current_cat) if current_cat in cats else 5, key=f"ecat_{e_id}")
+                        e_item = st.text_input("項目名", value=exp.get("item", ""), key=f"eitm_{e_id}")
+                        e_amt = st.number_input("金額", value=exp.get("amount", 0), step=100, key=f"eamt_{e_id}")
+                        current_payer = exp.get("payer", "")
+                        e_payer = st.selectbox("支払った人", members if members else ["未設定"], index=members.index(current_payer) if current_payer in members else 0, key=f"epay_{e_id}")
+                        e_memo = st.text_input("メモ", value=exp.get("memo", ""), key=f"emem_{e_id}")
+                        
+                        if st.button("💾 上書き保存", key=f"eupd_{e_id}"):
+                            plan_doc_ref.collection("expenses").document(e_id).update({
+                                "category": e_cat, "item": e_item, "amount": int(e_amt), "payer": e_payer, "memo": e_memo
+                            })
+                            st.session_state.toast_msg = "支出情報を更新しました！"
+                            st.rerun()
+                            
+                        st.divider()
+                        st.markdown("**🗑️ データの削除**")
+                        if st.button("削除実行", key=f"edel_{e_id}", type="primary"):
+                            plan_doc_ref.collection("expenses").document(e_id).delete()
+                            st.session_state.toast_msg = "支出を削除しました"
+                            st.rerun()
             
             st.divider()
             st.subheader("👤 個人別の立替額サマリー")
@@ -390,7 +437,7 @@ with tab2:
             st.dataframe(payer_summary.rename(columns={"payer": "支払者", "amount": "合計立替額"}), use_container_width=True)
 
 # =========================================================
-# ③ 個人別持ち物チェックリスト
+# ③ 個人別持ち物チェックリスト (削除確認ポップオーバー)
 # =========================================================
 with tab3:
     st.header(f"✅ {selected_plan_name} - 個人別持ち物チェック")
@@ -423,14 +470,19 @@ with tab3:
             display_text = f"~~{chk['item']}~~" if new_status else chk['item']
             cols[1].markdown(f"**{display_text}**")
             cols[2].caption(f"担当: {chk.get('assignee', '-')}")
-            if cols[3].button("🗑️", key=f"del_chk_{item_id}"):
-                plan_doc_ref.collection("checklist").document(item_id).delete()
-                st.rerun()
+            
+            with cols[3]:
+                with st.popover("🗑️"):
+                    st.write("削除しますか？")
+                    if st.button("削除", key=f"del_chk_{item_id}", type="primary"):
+                        plan_doc_ref.collection("checklist").document(item_id).delete()
+                        st.session_state.toast_msg = "持ち物を削除しました"
+                        st.rerun()
     else:
         st.info("該当する持ち物は登録されていません。")
 
 # =========================================================
-# ④ 釣果記録
+# ④ 釣果記録 (削除確認チェックボックス)
 # =========================================================
 with tab4:
     st.header(f"🐟 {selected_plan_name} - 釣果ログ")
@@ -456,7 +508,7 @@ with tab4:
                     "catch_date": str(c_date), "location": c_loc, "species": c_species, "size": float(c_size),
                     "count": int(c_count), "lure": c_lure, "notes": c_notes, "image_path": img_path, "created_at": datetime.now()
                 })
-                st.success("釣果を登録しました！")
+                st.session_state.toast_msg = "釣果を登録しました！"
                 st.rerun()
 
     with col2:
@@ -467,7 +519,7 @@ with tab4:
             for catch in catches_list:
                 c_id = catch["id"]
                 with st.expander(f"🐟 {catch.get('catch_date', '')} - {catch.get('species', '')} ({catch.get('size', 0)}cm / {catch.get('count', 0)}匹) @ {catch.get('location', '')}"):
-                    c_col1, c_col2, c_col3 = st.columns([1, 1.8, 0.2])
+                    c_col1, c_col2, c_col3 = st.columns([1, 1.8, 0.4])
                     with c_col1:
                         if catch.get("image_path") and os.path.exists(catch["image_path"]):
                             st.image(catch["image_path"], use_container_width=True)
@@ -477,14 +529,17 @@ with tab4:
                         st.write(f"**ヒットルアー/仕掛け:** {catch.get('lure', '-')}")
                         st.write(f"**状況・メモ:** {catch.get('notes', '-')}")
                     with c_col3:
-                        if st.button("🗑️", key=f"del_catch_{c_id}"):
+                        # 削除前にチェックを求める
+                        del_conf_c = st.checkbox("削除確認", key=f"conf_catch_{c_id}")
+                        if st.button("🗑️ 削除", key=f"del_catch_{c_id}", type="primary", disabled=not del_conf_c):
                             plan_doc_ref.collection("catches").document(c_id).delete()
+                            st.session_state.toast_msg = "釣果を削除しました"
                             st.rerun()
         else:
             st.info("登録されている釣果はありません。")
 
 # =========================================================
-# ⑤ ポイントマップ
+# ⑤ ポイントマップ (マップ＆ピンの削除確認)
 # =========================================================
 with tab5:
     st.header(f"🗺️ {selected_plan_name} - ポイントマップ")
@@ -509,18 +564,21 @@ with tab5:
                 saved_map_path = os.path.join("uploads", f"map_{plan_id}.jpg")
                 save_optimized_image(map_img_file, saved_map_path)
                 plan_doc_ref.collection("map_config").document("current").set({"image_path": saved_map_path})
-                st.success("マップ画像を保存しました！")
+                st.session_state.toast_msg = "マップ画像を保存しました！"
                 st.rerun()
     with col_u2:
         if current_map_path and os.path.exists(current_map_path):
-            if st.button("🗑️ 現在のマップ画像を削除", key="btn_del_map_img"):
-                try:
-                    os.remove(current_map_path)
-                except Exception:
-                    pass
-                plan_doc_ref.collection("map_config").document("current").delete()
-                st.success("マップ画像を削除しました。")
-                st.rerun()
+            # マップ画像削除の確認ポップオーバー
+            with st.popover("🗑️ 現在のマップ画像を削除"):
+                st.write("本当に画像を削除しますか？（ピンのデータは残ります）")
+                if st.button("画像削除を実行", key="btn_del_map_img", type="primary"):
+                    try:
+                        os.remove(current_map_path)
+                    except Exception:
+                        pass
+                    plan_doc_ref.collection("map_config").document("current").delete()
+                    st.session_state.toast_msg = "マップ画像を削除しました"
+                    st.rerun()
 
     st.divider()
 
@@ -620,7 +678,7 @@ with tab5:
                         "x": float(calc_x), "y": float(calc_y), "visible": True, "created_at": datetime.now()
                     })
                     st.session_state[temp_pin_key] = None
-                    st.success(f"「{p_name}」をマップに登録しました！")
+                    st.session_state.toast_msg = f"「{p_name}」をマップに登録しました！"
                     st.rerun()
             
             if st.button("❌ 選択をキャンセルしてピンを消す", key="cancel_temp_pin"):
@@ -636,21 +694,26 @@ with tab5:
         for pin in pins_list:
             p_id = pin["id"]
             with st.expander(f"{pin.get('icon', '📍')} **{pin.get('title', '')}** (位置: 横{pin.get('x')}% / 縦{pin.get('y')}%)"):
-                col_e1, col_e2, col_e3 = st.columns([0.1, 0.45, 0.45])
+                col_e1, col_e2, col_e3 = st.columns([0.15, 0.4, 0.45])
                 cur_vis = pin.get("visible", True)
-                new_vis = col_e1.checkbox("表示", value=cur_vis, key=f"pin_vis_{p_id}")
+                new_vis = col_e1.checkbox("マップに表示", value=cur_vis, key=f"pin_vis_{p_id}")
                 if new_vis != cur_vis:
                     plan_doc_ref.collection("pins").document(p_id).update({"visible": new_vis})
                     st.rerun()
                 edit_name = col_e2.text_input("ポイント名編集", value=pin.get("title", ""), key=f"edit_name_{p_id}")
                 edit_memo = col_e3.text_area("メモ編集", value=pin.get("memo", ""), key=f"edit_memo_{p_id}")
-                btn_cols = st.columns([1, 1, 8])
-                if btn_cols[0].button("💾 保存", key=f"save_pin_{p_id}"):
+                
+                btn_cols = st.columns([2, 1, 2, 5])
+                if btn_cols[0].button("💾 変更を保存", key=f"save_pin_{p_id}"):
                     plan_doc_ref.collection("pins").document(p_id).update({"title": edit_name, "memo": edit_memo})
-                    st.success("ピン情報を更新しました！")
+                    st.session_state.toast_msg = "ピン情報を更新しました！"
                     st.rerun()
-                if btn_cols[1].button("🗑️ 削除", key=f"del_pin_{p_id}"):
+                
+                # ピンの削除確認チェックボックス
+                del_conf_p = btn_cols[2].checkbox("削除確認", key=f"conf_pin_{p_id}")
+                if btn_cols[3].button("🗑️ 削除", key=f"del_pin_{p_id}", type="primary", disabled=not del_conf_p):
                     plan_doc_ref.collection("pins").document(p_id).delete()
+                    st.session_state.toast_msg = "ピンを削除しました"
                     st.rerun()
 
 # =========================================================
@@ -836,7 +899,6 @@ with tab7:
         </div>
         """
 
-        # ★ 修正ポイント: 全ての行の左側の空白（インデント）を強制的に削除し、コードブロック化を防止
         clean_html = "\n".join([line.lstrip() for line in html_report.split("\n")])
         st.markdown(clean_html, unsafe_allow_html=True)
 
@@ -879,6 +941,9 @@ with tab7:
         2. カテゴリを選び、「項目名（例: レンタカー代）」「金額」を入力します。
         3. 「支払った人」のリストから、そのお金を**実際に立て替えて払ってくれた人**を選びます。
         4. 「支出を追加」を押します。
+
+        **【支出の編集・修正】**
+        - 登録した支出の右側にある「⚙️」ボタンを押すと、入力した金額や担当者、メモを後から何度でも修正できます。
 
         **【精算の見方】**
         - 右下の「個人別の立替額サマリー」にある **精算(立替-均等負担)** という項目を見てください。
