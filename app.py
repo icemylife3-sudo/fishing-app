@@ -252,13 +252,11 @@ sidebar.header("📁 釣行計画の選択")
 
 plan_names = plans_df["name"].tolist()
 
-# ★ 修正1: URLのクエリパラメータから最後に開いていた計画IDを復元する
 url_params = st.query_params
 url_plan_id = url_params.get("plan")
 
 default_index = 0
 if url_plan_id:
-    # URLに保存されていたIDと一致する計画を探す
     match_indices = plans_df.index[plans_df['id'] == url_plan_id].tolist()
     if match_indices:
         default_index = match_indices[0]
@@ -268,7 +266,6 @@ selected_plan_name = sidebar.selectbox("現在の計画", plan_names, index=defa
 current_plan = plans_df[plans_df["name"] == selected_plan_name].iloc[0]
 plan_id = current_plan["id"]
 
-# ★ 修正1: 選択された計画IDをURLに記憶させる（F5リロード対策）
 if url_plan_id != plan_id:
     st.query_params["plan"] = plan_id
 
@@ -318,7 +315,6 @@ with sidebar.expander("🗑️ 計画を削除"):
     confirm_del = st.checkbox("この計画を削除することを確認", key="confirm_delete_plan")
     if st.button("現在の計画を削除", key="btn_delete_plan", type="primary") and confirm_del:
         delete_plan(plan_id)
-        # 削除後はURLパラメータをクリア
         st.query_params.clear()
         st.session_state.toast_msg = f"「{selected_plan_name}」を削除しました。"
         st.rerun()
@@ -511,11 +507,12 @@ with tab3:
         st.info("該当する持ち物は登録されていません。")
 
 # =========================================================
-# ④ 釣果記録
+# ④ 釣果記録 (編集機能の追加)
 # =========================================================
 with tab4:
     st.header(f"🐟 {selected_plan_name} - 釣果ログ")
-    col1, col2 = st.columns([1, 2])
+    st.caption("💡 写真をスマホの「写真フォルダ」に保存したい場合は、画像を長押しして「写真に追加」や「画像を保存」を選んでください。")
+    col1, col2 = st.columns([1, 2.2])
     with col1:
         st.subheader("釣果の追加")
         c_date = st.date_input("日付", value=date.today(), key=f"catch_date_input_{plan_id}")
@@ -558,11 +555,39 @@ with tab4:
                         st.write(f"**ヒットルアー/仕掛け:** {catch.get('lure', '-')}")
                         st.write(f"**状況・メモ:** {catch.get('notes', '-')}")
                     with c_col3:
-                        del_conf_c = st.checkbox("削除確認", key=f"conf_catch_{c_id}")
-                        if st.button("🗑️ 削除", key=f"del_catch_{c_id}", type="primary", disabled=not del_conf_c):
-                            plan_doc_ref.collection("catches").document(c_id).delete()
-                            st.session_state.toast_msg = "釣果を削除しました"
-                            st.rerun()
+                        # ★ 釣果の編集機能を追加
+                        with st.popover("⚙️ 編集/削除"):
+                            st.markdown("**✏️ 釣果の編集**")
+                            
+                            c_d_str = catch.get("catch_date")
+                            try:
+                                e_def_date = datetime.strptime(c_d_str, "%Y-%m-%d").date() if c_d_str else date.today()
+                            except ValueError:
+                                e_def_date = date.today()
+                                
+                            e_c_date = st.date_input("日付", value=e_def_date, key=f"ecd_{c_id}")
+                            e_c_loc = st.text_input("場所", value=catch.get("location", ""), key=f"ecl_{c_id}")
+                            e_c_spec = st.text_input("魚種", value=catch.get("species", ""), key=f"ecs_{c_id}")
+                            e_c_size = st.number_input("サイズ(cm)", value=float(catch.get("size", 0.0)), step=0.5, key=f"ecsz_{c_id}")
+                            e_c_count = st.number_input("匹数", value=int(catch.get("count", 1)), step=1, key=f"ecc_{c_id}")
+                            e_c_lure = st.text_input("ルアー", value=catch.get("lure", ""), key=f"eclu_{c_id}")
+                            e_c_notes = st.text_area("メモ", value=catch.get("notes", ""), key=f"ecn_{c_id}")
+                            
+                            if st.button("💾 上書き保存", key=f"esv_{c_id}"):
+                                plan_doc_ref.collection("catches").document(c_id).update({
+                                    "catch_date": str(e_c_date), "location": e_c_loc, "species": e_c_spec,
+                                    "size": float(e_c_size), "count": int(e_c_count), "lure": e_c_lure, "notes": e_c_notes
+                                })
+                                st.session_state.toast_msg = "釣果を更新しました！"
+                                st.rerun()
+                                
+                            st.divider()
+                            st.markdown("**🗑️ 釣果の削除**")
+                            del_conf_c = st.checkbox("削除確認", key=f"conf_catch_{c_id}")
+                            if st.button("削除実行", key=f"del_catch_{c_id}", type="primary", disabled=not del_conf_c):
+                                plan_doc_ref.collection("catches").document(c_id).delete()
+                                st.session_state.toast_msg = "釣果を削除しました"
+                                st.rerun()
         else:
             st.info("登録されている釣果はありません。")
 
@@ -743,7 +768,7 @@ with tab5:
                     st.rerun()
 
 # =========================================================
-# ⑥ 天気・風予報
+# ⑥ 天気・風予報（UIレイアウト＆計画毎の独立性 改善版）
 # =========================================================
 with tab6:
     st.header("🌤️ 釣場ポイントのピンポイント気象・風予報")
@@ -775,20 +800,20 @@ with tab6:
         except:
             pass
 
-    if "num_forecast_days" not in st.session_state:
-        st.session_state.num_forecast_days = 1
+    # ★ 修正1: 計画ごとに独立した「日数」の記憶キーを作成
+    n_days_key = f"num_forecast_days_{plan_id}"
+    if n_days_key not in st.session_state:
+        st.session_state[n_days_key] = 1
 
-    col_s1, col_s2, col_s3, col_btn1, col_btn2 = st.columns([2.5, 1.5, 1, 0.5, 0.5])
-    
-    # ★ 修正2: 「計画ごとの専用ID」を部品に割り振ることで、計画間で日付や地名が混ざる・上書きされるバグを完全防止
-    search_query = col_s1.text_input("釣場・スポット名を入力", value=default_loc, placeholder="例: 奥多摩湖、神津島など", key=f"weather_search_input_{plan_id}")
-    target_date = col_s2.date_input("日付を選択（過去・未来対応）", value=default_date, key=f"target_date_select_{plan_id}")
+    # ★ 修正2: 検索・日付入力を独立した行にしてPCで潰れないようにする
+    col_search1, col_search2, col_search3 = st.columns([3, 2, 1.5])
+    search_query = col_search1.text_input("釣場・スポット名を入力", value=default_loc, placeholder="例: 奥多摩湖", key=f"weather_search_input_{plan_id}")
+    target_date = col_search2.date_input("日付を選択（過去・未来対応）", value=default_date, key=f"target_date_select_{plan_id}")
     
     if str(target_date) != plan_data.get("weather_date"):
         plan_doc_ref.update({"weather_date": str(target_date)})
     
     coord_key = f"weather_coords_{plan_id}"
-    
     if coord_key not in st.session_state:
         if saved_lat and saved_lon:
             st.session_state[coord_key] = {"lat": saved_lat, "lon": saved_lon, "name": saved_name}
@@ -799,34 +824,46 @@ with tab6:
         else:
             st.session_state[coord_key] = None
 
-    if col_s3.button("検索＆確定", key=f"btn_confirm_loc_{plan_id}"):
-        if search_query:
-            lat, lon, found_name = geocode_location_jp(search_query)
-            if lat and lon:
-                st.session_state[coord_key] = {"lat": lat, "lon": lon, "name": found_name}
-                plan_doc_ref.update({
-                    "weather_location": search_query,
-                    "weather_lat": lat,
-                    "weather_lon": lon,
-                    "weather_name": found_name,
-                    "weather_date": str(target_date)
-                })
-                st.success(f"「{found_name}」の情報を取得・保存しました！")
-            else:
-                st.error("指定されたスポットが見つかりませんでした。より大きな地名で試してください。")
-
-    if col_btn1.button("＋ 1日", key=f"btn_add_day_{plan_id}"):
-        st.session_state.num_forecast_days = min(7, st.session_state.num_forecast_days + 1)
-        st.rerun()
-    if col_btn2.button("ー 1日", key=f"btn_sub_day_{plan_id}"):
-        st.session_state.num_forecast_days = max(1, st.session_state.num_forecast_days - 1)
-        st.rerun()
+    # ボタンの位置を下寄せにしてデザインを整える
+    with col_search3:
+        st.write("") # スペース調整
+        st.write("") 
+        if st.button("🔍 検索＆確定", key=f"btn_confirm_loc_{plan_id}", use_container_width=True):
+            if search_query:
+                lat, lon, found_name = geocode_location_jp(search_query)
+                if lat and lon:
+                    st.session_state[coord_key] = {"lat": lat, "lon": lon, "name": found_name}
+                    plan_doc_ref.update({
+                        "weather_location": search_query,
+                        "weather_lat": lat,
+                        "weather_lon": lon,
+                        "weather_name": found_name,
+                        "weather_date": str(target_date)
+                    })
+                    st.success(f"「{found_name}」の情報を取得・保存しました！")
+                else:
+                    st.error("指定されたスポットが見つかりませんでした。")
 
     st.divider()
+    
     coords = st.session_state.get(coord_key)
     if coords:
-        n_days = st.session_state.num_forecast_days
-        st.subheader(f"📍 {coords['name']} の気象予報・実績 (3時間ごと / {target_date} から {n_days} 日間)")
+        n_days = st.session_state[n_days_key]
+        
+        # ★ 修正2: 「＋1日」「－1日」ボタンをPCでも潰れないように幅をしっかり確保した行に配置
+        col_header, col_btn_add, col_btn_sub = st.columns([6, 1.5, 1.5])
+        with col_header:
+            st.subheader(f"📍 {coords['name']} の気象予報・実績")
+            st.caption(f"{target_date} から {n_days} 日間 (3時間ごと)")
+        with col_btn_add:
+            if st.button("➕ 1日増やす", key=f"btn_add_day_{plan_id}", use_container_width=True):
+                st.session_state[n_days_key] = min(7, st.session_state[n_days_key] + 1)
+                st.rerun()
+        with col_btn_sub:
+            if st.button("➖ 1日減らす", key=f"btn_sub_day_{plan_id}", use_container_width=True):
+                st.session_state[n_days_key] = max(1, st.session_state[n_days_key] - 1)
+                st.rerun()
+
         weather_cards = fetch_weather_3h_smart(coords["lat"], coords["lon"], target_date, num_days=n_days)
         
         if weather_cards:
@@ -849,7 +886,7 @@ with tab6:
         else:
             st.warning("指定された日付の気象データを取得できませんでした。")
     else:
-        st.info("👆 検索欄に場所を入力して「検索＆確定」を押してください。")
+        st.info("👆 検索欄に場所を入力して「🔍 検索＆確定」を押してください。")
 
 # =========================================================
 # ⑦ 操作マニュアル & グラフィカル遠征しおり
@@ -1034,5 +1071,5 @@ with tab7:
         1. 天気・風予報タブを開くと、行程表に登録した最初の場所の天気が自動で検索されています。
         2. 別の場所（例: 奥多摩湖、八丈島）を調べたい場合は、入力欄に地名を入れて「検索＆確定」を押してください。
         3. 過去の日付を選べばその日の「実際の天気（実績）」が、未来を選べば「予報」が3時間おきの大きなアイコンで表示されます。
-        4. 「＋ 1日」ボタンを押すと、翌日以降の予報（最大7日間）まで続けて表示させることができます。
+        4. 「➕ 1日増やす」ボタンを押すと、翌日以降の予報（最大7日間）まで続けて表示させることができます。
         """)
